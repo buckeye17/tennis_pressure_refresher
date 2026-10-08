@@ -1,0 +1,21 @@
+{
+  "source": "Synthetic payloads built from the PLAN.md 5.4 byte table. TODO: replace with captured fixtures.",
+  "cases": [
+    {
+      "payload_hex": "80EACA30BC95605B0300660800005500",
+      "note": "220000 Pa gauge, 21.50 C, 85 %, not flat",
+      "expected_gauge_kpa": 220.0,
+      "expected_temp_c": 21.5,
+      "expected_battery_pct": 85,
+      "expected_flat": false
+    },
+    {
+      "payload_hex": "81EACA30BC95A0860100F6FFFFFF1E01",
+      "note": "100000 Pa gauge, -0.10 C (negative int32), 30 %, flat flag set",
+      "expected_gauge_kpa": 100.0,
+      "expected_temp_c": -0.1,
+      "expected_battery_pct": 30,
+      "expected_flat": true
+    }
+  ]
+}

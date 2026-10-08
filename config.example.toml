@@ -1,0 +1,32 @@
+# Copy to config.toml and edit. config.toml is git-ignored.
+
+[site]
+atmospheric_kpa = 101.325        # local ambient pressure; lower at altitude
+reference_temp_c = 20.0          # temperature that compensated pressure is normalized to
+timezone_hint = "local"          # UI uses browser local time
+
+[collector]
+db_path = "data/canisters.db"    # relative paths are relative to this file
+# Enabled decoders, tried in order (first match wins). The B-Qtech sensors use
+# "fbb0_ac00"; "br_27a5" and "tpms_0100" are other common TPMS formats.
+decoders = ["fbb0_ac00"]
+raw_heartbeat_minutes = 10
+reading_heartbeat_minutes = 1
+scanner_restart_if_silent_minutes = 20
+log_level = "INFO"
+
+[web]
+host = "0.0.0.0"
+port = 5000
+stale_after_minutes = 90
+default_units = "psi"            # psi | kPa | bar
+
+# Map sensor MACs to canister names. Unlisted sensors that match a decoder
+# still get recorded and appear in the UI as "Unassigned".
+[[sensors]]
+mac = "30:94:A8:11:11:11"
+canister = "Canister 1"
+
+# [[sensors]]
+# mac = "AA:BB:CC:DD:EE:02"
+# canister = "Canister 2"

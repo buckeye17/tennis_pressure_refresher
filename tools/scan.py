@@ -108,9 +108,7 @@ async def run(args: argparse.Namespace) -> None:
         state = devices.get(mac)
         is_first = state is None
         if state is None:
-            state = DeviceState(
-                mac=mac, first_seen=now, is_new=(now - start) > args.baseline
-            )
+            state = DeviceState(mac=mac, first_seen=now, is_new=(now - start) > args.baseline)
             devices[mac] = state
 
         state.count += 1
@@ -165,8 +163,7 @@ async def run(args: argparse.Namespace) -> None:
 
 def print_summary(devices: dict[str, DeviceState], start: float) -> None:
     print(f"\n=== Summary: {len(devices)} device(s) seen ===")
-    print(f"{'MAC':<17}  {'RSSI':>4}  {'adverts':>7}  {'changes':>7}  "
-          f"{'first@':>7}  name / notes")
+    print(f"{'MAC':<17}  {'RSSI':>4}  {'adverts':>7}  {'changes':>7}  {'first@':>7}  name / notes")
 
     def sort_key(d: DeviceState) -> tuple:
         return (not d.tpms_reasons, not d.is_new, -(d.rssi or -999))
@@ -187,18 +184,25 @@ def print_summary(devices: dict[str, DeviceState], start: float) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--duration", type=float, default=0,
-                   help="seconds to scan (default: until Ctrl+C)")
-    p.add_argument("--baseline", type=float, default=30,
-                   help="devices first seen after this many seconds are marked NEW")
-    p.add_argument("--mac", action="append", default=[],
-                   help="only show this MAC (repeatable)")
-    p.add_argument("--min-rssi", type=int, default=None,
-                   help="ignore adverts weaker than this, e.g. -80")
-    p.add_argument("--tpms-only", action="store_true",
-                   help="only print devices matching a known TPMS format")
-    p.add_argument("--every", action="store_true",
-                   help="print every advert, not just first-seen/changed ones")
+    p.add_argument(
+        "--duration", type=float, default=0, help="seconds to scan (default: until Ctrl+C)"
+    )
+    p.add_argument(
+        "--baseline",
+        type=float,
+        default=30,
+        help="devices first seen after this many seconds are marked NEW",
+    )
+    p.add_argument("--mac", action="append", default=[], help="only show this MAC (repeatable)")
+    p.add_argument(
+        "--min-rssi", type=int, default=None, help="ignore adverts weaker than this, e.g. -80"
+    )
+    p.add_argument(
+        "--tpms-only", action="store_true", help="only print devices matching a known TPMS format"
+    )
+    p.add_argument(
+        "--every", action="store_true", help="print every advert, not just first-seen/changed ones"
+    )
     args = p.parse_args()
     try:
         asyncio.run(run(args))

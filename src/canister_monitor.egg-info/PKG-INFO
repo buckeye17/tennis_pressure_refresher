@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: canister-monitor
+Version: 0.1.0
+Summary: Monitor tennis-ball re-pressurizing canisters with BLE TPMS sensors on a Raspberry Pi
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: bleak
+Requires-Dist: flask
+Requires-Dist: waitress
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Dynamic: license-file
+
 # Canister Pressure Monitor — Implementation Plan
 
 This document is the source of truth for building this project. It is written for coding agents (and humans) working in this repo. Read it fully before starting any task, and follow the phase order unless told otherwise.
@@ -305,8 +320,8 @@ reference_temp_c = 20.0
 timezone_hint = "local"          # UI uses browser local time
 
 [collector]
-db_path = "data/canisters.db"           # relative to the config file
-decoders = ["fbb0_ac00"]                # also available: "br_27a5", "tpms_0100"
+db_path = "data/canisters.db"
+decoders = ["br_27a5", "tpms_0100"]
 raw_heartbeat_minutes = 10
 reading_heartbeat_minutes = 1
 scanner_restart_if_silent_minutes = 20   # watchdog, see §9
@@ -419,7 +434,6 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s. Persi
 │   ├── decoders/
 │   │   ├── __init__.py           # registry
 │   │   ├── base.py
-│   │   ├── fbb0_ac00.py          # B-Qtech sensors (§5.6)
 │   │   ├── br_27a5.py
 │   │   └── tpms_0100.py
 │   └── web/
@@ -433,7 +447,6 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s. Persi
 │   ├── fixtures/{br_27a5.json,tpms_0100.json,captured/}
 │   ├── test_decoders.py
 │   ├── test_compensation.py
-│   ├── test_config.py
 │   ├── test_db.py
 │   ├── test_collector_pipeline.py
 │   ├── test_simulate.py
@@ -464,13 +477,12 @@ Acceptance: sensor MACs known; format identified (or a new byte table documented
 
 ### Phase 1 — Scaffold, decoders, compensation
 
-Tasks: `pyproject.toml`, package layout, ruff + pytest config, `config.py` with example config, `decoders/` with all three formats (`fbb0_ac00`, `br_27a5`, `tpms_0100`), `compensation.py`, tests.
+Tasks: `pyproject.toml`, package layout, ruff + pytest config, `config.py` with example config, `decoders/` with both formats, `compensation.py`, tests.
 
 Acceptance:
 - `ruff check .` and `pytest` pass.
 - `br_27a5` decodes both fixtures in §5.3 within ±0.1 psi and exact temp/voltage.
-- `fbb0_ac00` decodes every captured fixture in `tests/fixtures/captured/` to the app's psi (±0.05) and °C.
-- `tpms_0100` decodes synthetic fixtures; malformed payloads (wrong length, garbage) return `None` without raising, for all decoders.
+- `tpms_0100` decodes synthetic fixtures; malformed payloads (wrong length, garbage) return `None` without raising, for both decoders.
 - Compensation tests cover: identity at reference temp, known hand-calculated values, missing temperature, gauge↔absolute round-trip.
 
 ### Phase 2 — Storage layer

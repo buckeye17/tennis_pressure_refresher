@@ -1,0 +1,7 @@
+bleak
+flask
+waitress
+
+[dev]
+pytest
+ruff

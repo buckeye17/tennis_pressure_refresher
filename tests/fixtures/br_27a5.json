@@ -1,0 +1,21 @@
+{
+  "source": "Arduino forum post cross-checked against the vendor app (PLAN.md 5.3, 15)",
+  "cases": [
+    {
+      "full_hex": "281E11014D8511",
+      "app": "1.3 bar, 17 C, 3.0 V",
+      "expected_psi_abs": 33.3,
+      "expected_temp_c": 17,
+      "expected_battery_v": 3.0,
+      "expected_status": 40
+    },
+    {
+      "full_hex": "401E1501FA0FF8",
+      "app": "2.5 bar, 21 C, 3.0 V",
+      "expected_psi_abs": 50.6,
+      "expected_temp_c": 21,
+      "expected_battery_v": 3.0,
+      "expected_status": 64
+    }
+  ]
+}

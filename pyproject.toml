@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "canister-monitor"
+version = "0.1.0"
+description = "Monitor tennis-ball re-pressurizing canisters with BLE TPMS sensors on a Raspberry Pi"
+readme = "PLAN.md"
+requires-python = ">=3.11"
+dependencies = ["bleak", "flask", "waitress"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

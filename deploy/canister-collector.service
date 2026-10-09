@@ -1,0 +1,31 @@
+# Template: deploy/install.sh replaces @USER@ and @APP_DIR@ and installs this
+# to /etc/systemd/system/. Edit the template, not the installed copy.
+[Unit]
+Description=Canister pressure monitor - BLE collector
+Documentation=file://@APP_DIR@/README.md
+# The Pi has no real-time clock: wait for NTP so readings get correct timestamps
+# (install.sh enables systemd-time-wait-sync.service, which provides this target).
+After=bluetooth.target time-sync.target
+Wants=bluetooth.target time-sync.target
+
+[Service]
+Type=simple
+User=@USER@
+# BlueZ's D-Bus policy grants scanning to the bluetooth group.
+SupplementaryGroups=bluetooth
+WorkingDirectory=@APP_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@APP_DIR@/.venv/bin/canister-collector --config @APP_DIR@/config.toml
+Restart=always
+RestartSec=10
+# Stop cleanly: the collector flushes pending writes on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

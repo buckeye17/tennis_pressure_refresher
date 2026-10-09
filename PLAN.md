@@ -521,6 +521,10 @@ Tasks:
 
 Acceptance: after a reboot, both services start, dashboard is reachable from another LAN device, and data collection resumes without intervention. `journalctl -u canister-collector` shows readings.
 
+As built: `/opt/canister-monitor` holds `.venv/`, `config.toml` (copied once, never overwritten, validated before services start) and `data/`. The units in `deploy/` are templates (`@USER@`, `@APP_DIR@`) rendered by `install.sh`; the service user defaults to `$SUDO_USER`. Bluetooth access: the collector unit uses `SupplementaryGroups=bluetooth` (no re-login needed) and the installer also adds the user to `bluetooth` for running `tools/scan.py` by hand. Light hardening: `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `ProtectHome=read-only`. The package is built from a temporary copy so nothing in the clone is written as root.
+
+**Status (2026-10-08): written but not yet run on hardware** — only `bash -n` checked. Acceptance is pending the Pi's SD card; expect to fix small issues on first install.
+
 ### Phase 7 — Analysis features *(after core works)*
 
 Tasks: `trends.py` (slope, plateau detection per §6), trend shown on cards ("−0.8 psi/day, still dropping" / "levelled off"), optional leak hint, per-canister "session" start via a `fill` event so charts can show "time since fill".

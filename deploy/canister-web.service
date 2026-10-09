@@ -1,0 +1,23 @@
+# Template: deploy/install.sh replaces @USER@ and @APP_DIR@ and installs this
+# to /etc/systemd/system/. Edit the template, not the installed copy.
+[Unit]
+Description=Canister pressure monitor - web dashboard
+Documentation=file://@APP_DIR@/README.md
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@APP_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@APP_DIR@/.venv/bin/canister-web --config @APP_DIR@/config.toml
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

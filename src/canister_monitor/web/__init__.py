@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Flask, g, render_template
 
-from canister_monitor import db
+from canister_monitor import __version__, db
 from canister_monitor.config import Config
 
 
@@ -31,7 +31,7 @@ def create_app(
 
     @app.get("/")
     def index():
-        return render_template("index.html", config=config)
+        return render_template("index.html", config=config, version=__version__)
 
     @app.teardown_appcontext
     def close_db(_exc: BaseException | None) -> None:

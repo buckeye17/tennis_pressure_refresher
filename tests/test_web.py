@@ -1,5 +1,6 @@
 import csv
 import io
+import re
 
 import pytest
 
@@ -65,6 +66,29 @@ def test_index(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert b"Canister Monitor" in resp.data
+    assert b'data-default-units="psi"' in resp.data
+
+
+def test_dashboard_assets_are_local_and_served(client):
+    """PLAN.md: no runtime internet dependency. Every asset the page loads must come
+    from this server, and none of our own front-end files may reference another host."""
+    html = client.get("/").get_data(as_text=True)
+    refs = re.findall(r'(?:src|href)="([^"]+)"', html)
+    assert refs, "page references no assets?"
+    for ref in refs:
+        assert not re.match(r"^(https?:)?//", ref), f"external reference: {ref}"
+        if ref.startswith("data:"):
+            continue
+        assert client.get(ref).status_code == 200, ref
+    assert any("uPlot.iife.min.js" in r for r in refs)
+    for name in ("app.js", "style.css"):
+        text = client.get(f"/static/{name}").get_data(as_text=True)
+        assert not re.search(r"https?://", text), f"{name} references an external URL"
+
+
+def test_vendored_uplot_has_license_and_pinned_version(client):
+    assert client.get("/static/vendor/uplot/LICENSE").status_code == 200
+    assert b"uPlot 1.6.32" in client.get("/static/vendor/uplot/VERSION").data
 
 
 def test_healthz(client):

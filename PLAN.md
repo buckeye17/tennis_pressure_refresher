@@ -384,14 +384,14 @@ Validate query params; return 400 with `{"error": "..."}` on bad input (404 for 
 Plain HTML/CSS/vanilla JS. No build step. uPlot vendored at `static/vendor/uplot/` (JS + CSS, pinned version, license file included).
 
 Layout:
-1. **Header:** title, units selector (psi / kPa / bar), "Raw vs temperature-compensated" toggle, auto-refresh indicator.
+1. **Header:** title, units selector (psi / kPa / bar), temperature units (°F / °C; defaults to °F for en-US browsers, since the vendor app shows °F), "Raw vs temperature-compensated" toggle, auto-refresh indicator.
 2. **Canister cards:** one per sensor. Large current gauge pressure, compensated pressure beneath, temperature, battery, RSSI, "updated 4 min ago". Card turns amber when stale. Unassigned sensors show their MAC and a hint to add them to `config.toml`.
 3. **Chart:** all canisters overlaid, one line each. Time range buttons: 6 h, 24 h, 3 d, 7 d, All. Lines drawn as steps (value holds until next reading). Event annotations drawn as vertical markers with tooltips.
 4. **Temperature chart:** smaller chart below, same time axis, so temperature-driven swings are obvious.
 5. **Events panel:** list of annotations plus a small form to add one (canister dropdown incl. "All", kind, note).
 6. **Export link** for the current time range.
 
-Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s. Persist units/toggle/range choices in `localStorage`. Must work on a phone screen. Respect `prefers-color-scheme` for dark mode.
+Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refreshes call `setData` on existing charts so a zoom isn't reset each minute. "Updated X ago" uses the server's clock (skew measured on each poll), not the phone's. Persist units/temperature units/toggle/range choices in `localStorage`. Must work on a phone screen. Respect `prefers-color-scheme` for dark mode.
 
 ### 9.5 Tools (`tools/`)
 

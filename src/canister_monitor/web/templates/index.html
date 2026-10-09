@@ -1,19 +1,78 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-default-units="{{ config.web.default_units }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Canister Monitor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/uplot/uPlot.min.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version) }}">
 </head>
 <body>
-  <h1>Canister Monitor</h1>
-  <p>The dashboard arrives in Phase 5. The API is live:</p>
-  <ul>
-    <li><a href="/api/canisters">/api/canisters</a></li>
-    <li><a href="/api/readings?max_points=200">/api/readings</a></li>
-    <li><a href="/api/events">/api/events</a></li>
-    <li><a href="/api/export.csv">/api/export.csv</a></li>
-    <li><a href="/healthz">/healthz</a></li>
-  </ul>
+  <header class="top">
+    <h1>Canister Monitor</h1>
+    <div class="controls">
+      <div class="seg" id="units" role="group" aria-label="Pressure units">
+        <button type="button" data-value="psi">psi</button>
+        <button type="button" data-value="kPa">kPa</button>
+        <button type="button" data-value="bar">bar</button>
+      </div>
+      <div class="seg" id="temp-units" role="group" aria-label="Temperature units">
+        <button type="button" data-value="F">°F</button>
+        <button type="button" data-value="C">°C</button>
+      </div>
+      <label class="toggle" title="Show pressure normalized to the reference temperature, so day/night swings don't hide the real trend">
+        <input type="checkbox" id="compensated"> Temp-compensated
+      </label>
+      <span class="status" id="status" aria-live="polite"><span class="dot"></span><span id="status-text">Loading…</span></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="cards" id="cards" aria-label="Canisters"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 id="pressure-title">Pressure</h2>
+        <div class="seg" id="ranges" role="group" aria-label="Time range">
+          <button type="button" data-value="21600">6 h</button>
+          <button type="button" data-value="86400">24 h</button>
+          <button type="button" data-value="259200">3 d</button>
+          <button type="button" data-value="604800">7 d</button>
+          <button type="button" data-value="0">All</button>
+        </div>
+      </div>
+      <div class="chart" id="chart-pressure"><div class="empty" hidden>No readings in this range</div></div>
+      <h3 class="chart-title">Temperature</h3>
+      <div class="chart" id="chart-temp"><div class="empty" hidden>No readings in this range</div></div>
+      <p class="chart-foot">
+        <span class="hint">Drag to zoom, double-click to reset. Dashed lines are notes.</span>
+        <a id="export" href="/api/export.csv" download>Download CSV for this range</a>
+      </p>
+    </section>
+
+    <section class="panel" aria-labelledby="notes-title">
+      <h2 id="notes-title">Notes</h2>
+      <form id="event-form" class="event-form">
+        <select id="event-mac" aria-label="Canister"><option value="">All canisters</option></select>
+        <select id="event-kind" aria-label="Kind">
+          <option value="note">Note</option>
+          <option value="fill">Filled</option>
+          <option value="vent">Vented</option>
+          <option value="balls_added">Balls added</option>
+          <option value="balls_removed">Balls removed</option>
+        </select>
+        <input id="event-note" type="text" maxlength="1000" placeholder="e.g. filled to 30 psi" aria-label="Note">
+        <input id="event-when" type="datetime-local" aria-label="When (leave empty for now)" title="When (leave empty for now)">
+        <button type="submit">Add</button>
+        <span class="form-error" id="event-error" role="alert"></span>
+      </form>
+      <ul class="events" id="events"></ul>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='vendor/uplot/uPlot.iife.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=version) }}"></script>
 </body>
 </html>

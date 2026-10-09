@@ -259,6 +259,23 @@ class SeriesPoint:
     count: int
 
 
+def _range_condition(
+    mac: str | None, start: float | None, end: float | None, table: str = ""
+) -> tuple[str, dict]:
+    """SQL WHERE clause and parameters for optional MAC and time-range filters."""
+    where, params = ["1=1"], {}
+    if mac is not None:
+        where.append(f"{table}mac = :mac")
+        params["mac"] = mac
+    if start is not None:
+        where.append(f"{table}ts >= :start")
+        params["start"] = start
+    if end is not None:
+        where.append(f"{table}ts <= :end")
+        params["end"] = end
+    return " AND ".join(where), params
+
+
 def readings_between(
     conn: sqlite3.Connection,
     mac: str | None = None,
@@ -273,17 +290,7 @@ def readings_between(
     """
     if max_points < 1:
         raise ValueError("max_points must be at least 1")
-    where, params = ["1=1"], {}
-    if mac is not None:
-        where.append("mac = :mac")
-        params["mac"] = mac
-    if start is not None:
-        where.append("ts >= :start")
-        params["start"] = start
-    if end is not None:
-        where.append("ts <= :end")
-        params["end"] = end
-    cond = " AND ".join(where)
+    cond, params = _range_condition(mac, start, end)
 
     points: list[SeriesPoint] = []
     stats = conn.execute(
@@ -318,6 +325,35 @@ def readings_between(
 
 def newest_reading_ts(conn: sqlite3.Connection) -> float | None:
     return conn.execute("SELECT MAX(ts) FROM readings").fetchone()[0]
+
+
+@dataclass(frozen=True)
+class StoredReading:
+    ts: float
+    mac: str
+    canister: str | None
+    pressure_kpa_abs: float
+    temp_c: float | None
+    battery_pct: float | None
+    battery_v: float | None
+
+
+def all_readings(
+    conn: sqlite3.Connection,
+    mac: str | None = None,
+    start: float | None = None,
+    end: float | None = None,
+) -> list[StoredReading]:
+    """Every reading in the range (no downsampling), ordered by time; used for export."""
+    cond, params = _range_condition(mac, start, end, table="r.")
+    rows = conn.execute(
+        f"""SELECT r.ts, r.mac, s.canister, r.pressure_kpa_abs, r.temp_c,
+                   r.battery_pct, r.battery_v
+            FROM readings r LEFT JOIN sensors s ON s.mac = r.mac
+            WHERE {cond} ORDER BY r.ts, r.id""",
+        params,
+    ).fetchall()
+    return [StoredReading(**dict(r)) for r in rows]
 
 
 # --- events (annotations) ----------------------------------------------------

@@ -12,12 +12,16 @@ dependencies = ["bleak", "flask", "waitress"]
 
 [project.scripts]
 canister-collector = "canister_monitor.collector:main"
+canister-web = "canister_monitor.web.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+canister_monitor = ["web/templates/*.html", "web/static/**/*"]
 
 [tool.ruff]
 line-length = 100

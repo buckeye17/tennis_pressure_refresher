@@ -361,7 +361,7 @@ Required so agents can develop and test **without BLE hardware**.
 
 ### 9.3 Web (`src/canister_monitor/web/`)
 
-- `python -m canister_monitor.web [--config PATH]` runs waitress.
+- `python -m canister_monitor.web [--config PATH] [--db PATH] [--simulate]` runs waitress (also installed as `canister-web`). `--simulate` serves the simulator's `-sim.db`.
 - Flask app factory `create_app(config)` for testability.
 
 **API** (all JSON unless noted; timestamps as UTC epoch seconds):
@@ -369,15 +369,15 @@ Required so agents can develop and test **without BLE hardware**.
 | Method & path | Purpose |
 |---|---|
 | `GET /` | Dashboard HTML |
-| `GET /api/canisters` | One entry per sensor: mac, canister name, assigned?, latest reading (abs/gauge/compensated kPa, temp, battery), last_seen, rssi, stale (bool), trend (Phase 7) |
-| `GET /api/readings?mac=&from=&to=&max_points=` | Time series for one or all sensors. Includes gauge and compensated gauge in kPa. Server downsamples (bucket average) to `max_points` (default 2000) |
+| `GET /api/canisters` | One entry per sensor: mac, canister name, assigned?, latest reading (abs/gauge/compensated kPa, temp, battery), last_seen, rssi, stale (bool), trend (Phase 7). Configured sensors come first (config order), including ones never heard yet; then unassigned ones. Also returns `now` and `settings` (atmospheric, reference temp, stale_after_s, default_units) for the UI. Config names override names stored at collection time |
+| `GET /api/readings?mac=&from=&to=&max_points=` | Time series for one or all sensors, **columnar per sensor** (uPlot-friendly): `{series: [{mac, canister, ts[], gauge_kpa[], compensated_gauge_kpa[], temp_c[], count[]}]}`. Server downsamples (bucket average of abs pressure and temp, then compensated) to `max_points` per sensor (default 2000, max 20000) |
 | `GET /api/events?from=&to=` | Annotations |
 | `POST /api/events` | Create annotation `{ts?, mac?, kind, note}`; `ts` defaults to now |
 | `DELETE /api/events/<id>` | Remove annotation |
-| `GET /api/export.csv?from=&to=&mac=` | CSV: local ISO time, UTC epoch, canister, mac, gauge psi, abs psi, compensated gauge psi, temp °C, battery |
+| `GET /api/export.csv?from=&to=&mac=` | CSV (every reading, no downsampling): `local_time,utc_epoch,canister,mac,gauge_psi,abs_psi,compensated_gauge_psi,temp_c,battery_pct,battery_v` |
 | `GET /healthz` | `{"ok": true, "db": "...", "newest_reading_age_s": N}` |
 
-Validate query params; return 400 with a message on bad input.
+Validate query params; return 400 with `{"error": "..."}` on bad input (404 for a missing event). Event `kind` is a short lowercase word (`note`, `fill`, `vent`, `balls_added`, …).
 
 ### 9.4 Dashboard (`templates/index.html`, `static/app.js`, `static/style.css`)
 

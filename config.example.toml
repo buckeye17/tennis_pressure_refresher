@@ -21,6 +21,14 @@ port = 5000
 stale_after_minutes = 90
 default_units = "psi"            # psi | kPa | bar
 
+[trends]
+# Slope of temperature-compensated pressure over a trailing window, in psi/day.
+# 24 h suits these sensors' 0.46 psi steps; shorter windows are too noisy.
+window_hours = 24
+plateau_threshold_psi_per_day = 0.3   # |slope| below this counts as flat
+plateau_hours = 12                    # flat for this long = "levelled off"
+leak_hint_after_hours = 96            # still dropping this long after a fill = leak hint
+
 # Map sensor MACs to canister names. Unlisted sensors that match a decoder
 # still get recorded and appear in the UI as "Unassigned".
 [[sensors]]

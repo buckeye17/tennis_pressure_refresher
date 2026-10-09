@@ -24,6 +24,12 @@ def test_empty_config_uses_defaults():
     assert cfg.web.default_units == "psi"
 
 
+def test_trends_section():
+    cfg = parse_config({"trends": {"window_hours": 12, "leak_hint_after_hours": 72}})
+    assert (cfg.trends.window_hours, cfg.trends.leak_hint_after_hours) == (12.0, 72.0)
+    assert cfg.trends.plateau_threshold_psi_per_day == 0.3  # default kept
+
+
 def test_ints_accepted_for_floats():
     cfg = parse_config({"site": {"atmospheric_kpa": 101}})
     assert cfg.site.atmospheric_kpa == 101.0
@@ -59,6 +65,8 @@ def test_invalid_toml_message(tmp_path):
         ({"collector": {"reading_heartbeat_minutes": -1}}, "greater than 0"),
         ({"collector": {"db_path": 5}}, "db_path has the wrong type"),
         ({"collector": {"log_level": "LOUD"}}, "log_level"),
+        ({"trends": {"window_hours": 0}}, "greater than 0"),
+        ({"trends": {"window": 24}}, "unknown key"),
         ({"web": {"port": 70000}}, "port"),
         ({"web": {"port": True}}, "port has the wrong type"),
         ({"web": {"default_units": "atm"}}, "default_units"),

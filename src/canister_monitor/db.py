@@ -394,3 +394,11 @@ def delete_event(conn: sqlite3.Connection, event_id: int) -> bool:
     """Delete an annotation; returns False if it didn't exist."""
     with conn:
         return conn.execute("DELETE FROM events WHERE id = ?", (event_id,)).rowcount > 0
+
+
+def latest_fill_ts(conn: sqlite3.Connection, mac: str, now: float) -> float | None:
+    """Time of the most recent "fill" event for this sensor (or for all canisters)."""
+    return conn.execute(
+        "SELECT MAX(ts) FROM events WHERE kind = 'fill' AND (mac = ? OR mac IS NULL) AND ts <= ?",
+        (mac, now),
+    ).fetchone()[0]

@@ -17,6 +17,7 @@ from canister_monitor.compensation import (
     kpa_to_psi,
 )
 from canister_monitor.config import MAC_RE
+from canister_monitor.trends import HOUR_S, TrendSettings, compute_trend
 from canister_monitor.web import get_db
 
 api = Blueprint("api", __name__)
@@ -112,6 +113,32 @@ def _pressures(abs_kpa: float | None, temp_c: float | None) -> dict:
     }
 
 
+def _trend(mac: str, first_seen: float, now: float) -> dict:
+    """Trend from temperature-compensated gauge pressure (raw gauge if no temperature)."""
+    config = _ctx()["config"]
+    settings = TrendSettings.from_config(config.trends)
+    span = settings.window_s + settings.plateau_s + 2 * HOUR_S
+    rows = db.all_readings(get_db(), mac=mac, start=now - span, end=now)
+    ts, values = [], []
+    for r in rows:
+        p = _pressures(r.pressure_kpa_abs, r.temp_c)
+        ts.append(r.ts)
+        values.append(
+            p["compensated_gauge_kpa"] if p["compensated_gauge_kpa"] is not None else p["gauge_kpa"]
+        )
+    fill = db.latest_fill_ts(get_db(), mac, now)
+    session_start, source = (fill, "fill") if fill is not None else (first_seen, "first_reading")
+    t = compute_trend(ts, values, now, settings, session_start, source)
+    return {
+        "status": t.status,
+        "slope_kpa_per_day": t.slope_kpa_per_day,
+        "levelled_since": t.levelled_since,
+        "session_start": t.session_start,
+        "session_source": t.session_source,
+        "window_s": settings.window_s,
+    }
+
+
 # --- endpoints -------------------------------------------------------------------
 
 
@@ -150,7 +177,7 @@ def canisters():
                     "battery_v": s.battery_v,
                     "flags": s.flags,
                 },
-                "trend": None,  # Phase 7
+                "trend": _trend(mac, s.first_seen, now) if reading_ts is not None else None,
             }
         )
     return jsonify(

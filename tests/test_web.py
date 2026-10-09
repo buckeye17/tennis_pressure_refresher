@@ -1,5 +1,6 @@
 import csv
 import io
+import math
 import re
 
 import pytest
@@ -135,7 +136,7 @@ def test_canisters(client):
     assert r["compensated_kpa_abs"] == pytest.approx(expected_comp)
     assert r["compensated_gauge_kpa"] == pytest.approx(expected_comp - ATM)
     assert r["temp_c"] == 30.0 and r["flags"] == {"status": 0}
-    assert c1["trend"] is None
+    assert c1["trend"]["status"] == "insufficient_data"  # only an hour of data
 
     c2 = by_mac[MAC2]
     assert (c2["canister"], c2["assigned"], c2["stale"]) == (None, False, True)
@@ -296,3 +297,41 @@ def test_export_csv_filters_and_validation(client):
     rows = read_csv(client.get(f"/api/export.csv?from={NOW - 120}"))
     assert len(rows) == 3
     assert "mac must look like" in error_of(client.get("/api/export.csv?mac=zzz"))
+
+
+# --- trends ------------------------------------------------------------------------------
+
+
+def test_canister_trends(tmp_path):
+    """Flat for two days -> levelled off; steady 1.5 psi/day fall for 5 days since a
+    fill -> leak hint. Trends use compensated pressure, so a temperature swing on the
+    flat canister must not register as a change."""
+    path = tmp_path / "trend.db"
+    conn = db.connect(path)
+    start = NOW - 5 * 86400
+    rate = -1.5 * 6.894757 / 86400  # kPa per second
+    db.insert_event(conn, start, "fill", "filled to 30 psi")  # all canisters
+    for i in range(int(5 * 86400 / 600)):
+        ts = start + i * 600
+        db.insert_reading(conn, reading(ts, mac=MAC2, gauge=200.0 + rate * (ts - start)), None)
+        if ts >= NOW - 2 * 86400:
+            # Constant gas, temperature swinging 15-25 C: raw gauge moves, compensated doesn't.
+            temp = 20 + 5 * math.sin(2 * math.pi * ts / 86400)
+            abs_kpa = (ATM + 150.0) * (temp + 273.15) / 293.15
+            db.insert_reading(conn, reading(ts, gauge=abs_kpa - ATM, temp=temp), None)
+    conn.close()
+    client = create_app(CONFIG, db_path=path, clock=lambda: NOW).test_client()
+    by_mac = {c["mac"]: c for c in client.get("/api/canisters").get_json()["canisters"]}
+
+    flat = by_mac[MAC1]["trend"]
+    assert flat["status"] == "levelled_off"
+    assert abs(flat["slope_kpa_per_day"]) < 0.01
+    assert flat["session_start"] == start and flat["session_source"] == "fill"
+
+    leak = by_mac[MAC2]["trend"]
+    assert leak["status"] == "leak_suspected"
+    assert leak["slope_kpa_per_day"] == pytest.approx(-1.5 * 6.894757, rel=1e-6)
+    assert leak["levelled_since"] is None
+    assert leak["window_s"] == 86400
+
+    assert by_mac[MAC3]["trend"] is None  # never heard

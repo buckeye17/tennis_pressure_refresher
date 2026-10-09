@@ -43,6 +43,18 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class TrendsConfig:
+    """Trend analysis (PLAN.md section 6). Defaults are tuned for the B-Qtech sensors'
+    0.46 psi resolution: shorter windows make a flat canister's slope wobble by
+    more than a psi/day."""
+
+    window_hours: float = 24.0
+    plateau_threshold_psi_per_day: float = 0.3
+    plateau_hours: float = 12.0
+    leak_hint_after_hours: float = 96.0
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     mac: str
     canister: str
@@ -53,6 +65,7 @@ class Config:
     site: SiteConfig = field(default_factory=SiteConfig)
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    trends: TrendsConfig = field(default_factory=TrendsConfig)
     sensors: list[SensorConfig] = field(default_factory=list)
 
     def canister_for(self, mac: str) -> str | None:
@@ -104,7 +117,7 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
     A relative ``db_path`` is resolved against ``base_dir`` (the config file's
     directory) when given.
     """
-    unknown = sorted(set(data) - {"site", "collector", "web", "sensors"})
+    unknown = sorted(set(data) - {"site", "collector", "web", "trends", "sensors"})
     if unknown:
         raise ConfigError(f"unknown section(s): {', '.join(unknown)}")
 
@@ -138,6 +151,15 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
         raise ConfigError(f"[web] default_units must be one of {UNITS}, got {web.default_units!r}")
     _positive("web", stale_after_minutes=web.stale_after_minutes)
 
+    trends = TrendsConfig(**_section(TrendsConfig, data.get("trends", {}), "trends"))
+    _positive(
+        "trends",
+        window_hours=trends.window_hours,
+        plateau_threshold_psi_per_day=trends.plateau_threshold_psi_per_day,
+        plateau_hours=trends.plateau_hours,
+        leak_hint_after_hours=trends.leak_hint_after_hours,
+    )
+
     raw_sensors = data.get("sensors", [])
     if not isinstance(raw_sensors, list):
         raise ConfigError("sensors must be an array of tables: [[sensors]]")
@@ -155,7 +177,7 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
             raise ConfigError(f"[{where}] duplicate mac {mac}")
         sensors.append(SensorConfig(mac=mac, canister=values["canister"]))
 
-    return Config(site=site, collector=collector, web=web, sensors=sensors)
+    return Config(site=site, collector=collector, web=web, trends=trends, sensors=sensors)
 
 
 def load_config(path: str | Path) -> Config:

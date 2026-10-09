@@ -37,7 +37,7 @@
       if (saved.units in PRESSURE) state.units = saved.units;
       if (saved.tempUnit === "C" || saved.tempUnit === "F") state.tempUnit = saved.tempUnit;
       if (typeof saved.compensated === "boolean") state.compensated = saved.compensated;
-      if (Number.isFinite(saved.range)) state.range = saved.range;
+      if (Number.isFinite(saved.range) || saved.range === "fill") state.range = saved.range;
     } catch (_) { /* storage unavailable: keep defaults */ }
   }
 
@@ -107,9 +107,16 @@
     return resp.status === 204 ? null : resp.json();
   }
 
+  /** Start of the selected range in epoch seconds, or null for "All". */
+  function rangeStart() {
+    if (state.range === "fill") return lastFill();
+    return state.range > 0 ? serverNow() - state.range : null;
+  }
+
   function rangeQuery() {
     const params = new URLSearchParams();
-    if (state.range > 0) params.set("from", String(Math.floor(serverNow() - state.range)));
+    const from = rangeStart();
+    if (from != null) params.set("from", String(Math.floor(from)));
     return params;
   }
 
@@ -118,6 +125,49 @@
     status.classList.toggle("ok", ok);
     status.classList.toggle("error", !ok);
     $("#status-text").textContent = text;
+  }
+
+  // --- trends ------------------------------------------------------------------------
+
+  function fmtDays(seconds) {
+    const d = seconds / 86400;
+    return d < 1 ? `${Math.max(1, Math.round(seconds / 3600))} h` : `${d.toFixed(1)} days`;
+  }
+
+  /** One line describing the trend, plus a CSS modifier. */
+  function trendLine(trend) {
+    if (!trend) return null;
+    const perDay = toPressure(trend.slope_kpa_per_day);
+    const digits = Math.max(1, PRESSURE[state.units].digits + 1);
+    const rate = perDay == null ? "" : `${Math.abs(perDay).toFixed(digits)} ${state.units}/day`;
+    const since = serverNow() - (trend.levelled_since ?? serverNow());
+    const after = trend.session_source === "fill" ? "after fill" : "since first reading";
+    const age = trend.session_start == null ? "" : fmtDays(serverNow() - trend.session_start);
+    switch (trend.status) {
+      case "insufficient_data":
+        return { text: `Trend: needs ~${Math.round(trend.window_s / 7200)} h of data`, mod: "" };
+      case "falling":
+        return { text: `▼ ${rate} · still dropping`, mod: "" };
+      case "rising":
+        return { text: `▲ ${rate} · rising`, mod: "" };
+      case "levelling_off":
+        return { text: `Levelling off · flat ${fmtDays(since)}`, mod: "flat" };
+      case "levelled_off": // levelled_since is only looked back ~plateau_hours, so no duration
+        return { text: "✓ Levelled off", mod: "flat" };
+      case "leak_suspected":
+        return { text: `▼ ${rate} · still dropping ${age} ${after} — check for a leak`, mod: "leak" };
+      default:
+        return null;
+    }
+  }
+
+  /** Most recent fill across canisters (for the "Since fill" range), or null. */
+  function lastFill() {
+    const fills = state.canisters
+      .map((c) => c.trend)
+      .filter((t) => t && t.session_source === "fill")
+      .map((t) => t.session_start);
+    return fills.length ? Math.max(...fills) : null;
   }
 
   // --- cards ---------------------------------------------------------------------------
@@ -139,6 +189,9 @@
       const age = r ? serverNow() - r.ts : null;
       const battery = r && (r.battery_pct != null ? `${Math.round(r.battery_pct)} %`
         : r.battery_v != null ? `${r.battery_v.toFixed(2)} V` : "—");
+      const trend = trendLine(c.trend);
+      const filled = c.trend && c.trend.session_source === "fill"
+        ? `Filled ${fmtDays(serverNow() - c.trend.session_start)} ago` : null;
 
       root.append(el("article", { class: `card${c.stale ? " stale" : ""}`, style: `--c:${colorFor(c.mac)}` },
         el("h3", {}, c.canister || "Unassigned sensor"),
@@ -150,6 +203,8 @@
           el("div", {}, el("dt", {}, "Temp"), el("dd", {}, r ? fmtTemp(r.temp_c) : "—")),
           el("div", {}, el("dt", {}, "Battery"), el("dd", {}, battery || "—")),
           el("div", {}, el("dt", {}, "Signal"), el("dd", {}, c.rssi != null ? `${c.rssi} dBm` : "—"))),
+        trend ? el("div", { class: `trend ${trend.mod}` }, trend.text) : null,
+        filled ? el("div", { class: "session" }, filled) : null,
         el("div", { class: "age" },
           r ? `${c.stale ? "Stale · " : ""}updated ${fmtAgo(age)}` : c.last_seen ? "Heard, no reading yet" : "Never heard"),
         c.assigned ? null : el("p", { class: "hint" },
@@ -266,7 +321,8 @@
 
   function xRange() {
     const now = serverNow();
-    if (state.range > 0) return [now - state.range, now];
+    const from = rangeStart();
+    if (from != null) return [from, now];
     const xs = state.series.flatMap((s) => s.ts);
     return xs.length ? [Math.min(...xs), now] : [now - 86400, now];
   }
@@ -376,6 +432,7 @@
       state.settings = body.settings;
       state.canisters = body.canisters;
       for (const c of state.canisters) colorFor(c.mac); // stable colors in card order
+      $("#range-fill").disabled = lastFill() == null;
       renderCards();
       renderEventCanisterOptions();
       setStatus(true, `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`);
@@ -424,7 +481,10 @@
     loadPrefs();
     bindSegment("#units", () => state.units, (v) => { state.units = v; renderCards(); renderCharts(); });
     bindSegment("#temp-units", () => state.tempUnit, (v) => { state.tempUnit = v; renderCards(); renderCharts(); });
-    bindSegment("#ranges", () => state.range, (v) => { state.range = Number(v); refreshReadings(); });
+    bindSegment("#ranges", () => state.range, (v) => {
+      state.range = v === "fill" ? "fill" : Number(v);
+      refreshReadings();
+    });
     const comp = $("#compensated");
     comp.checked = state.compensated;
     comp.addEventListener("change", () => {

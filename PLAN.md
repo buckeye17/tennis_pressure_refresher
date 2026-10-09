@@ -237,7 +237,7 @@ Compensation must use **absolute** pressure and **Kelvin**. If `temp_c` is missi
 
 ## 7. Data model (SQLite)
 
-Enable `PRAGMA journal_mode=WAL;` and `PRAGMA foreign_keys=ON;` on every connection. Use a `schema_version` table and simple numbered migrations in `db.py`.
+Enable `PRAGMA journal_mode=WAL;`, `PRAGMA foreign_keys=ON;` and `PRAGMA synchronous=FULL;` (committed rows survive power loss) on every connection. Use a `schema_version` table and simple numbered migrations in `db.py`.
 
 ```sql
 CREATE TABLE sensors (
@@ -412,6 +412,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s. Persi
 │   ├── __init__.py
 │   ├── config.py
 │   ├── db.py                     # connect(), migrations, queries
+│   ├── write_policy.py           # raw/reading dedupe + heartbeat rules (§7)
 │   ├── compensation.py
 │   ├── trends.py                 # Phase 7
 │   ├── collector.py
@@ -435,6 +436,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s. Persi
 │   ├── test_compensation.py
 │   ├── test_config.py
 │   ├── test_db.py
+│   ├── test_write_policy.py
 │   ├── test_collector_pipeline.py
 │   ├── test_simulate.py
 │   └── test_web.py

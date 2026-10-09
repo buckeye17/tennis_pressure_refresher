@@ -10,6 +10,9 @@ readme = "PLAN.md"
 requires-python = ">=3.11"
 dependencies = ["bleak", "flask", "waitress"]
 
+[project.scripts]
+canister-collector = "canister_monitor.collector:main"
+
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 

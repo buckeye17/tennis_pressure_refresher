@@ -10,6 +10,7 @@ from canister_monitor.decoders import REGISTRY
 
 MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 UNITS = ("psi", "kPa", "bar")
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 class ConfigError(ValueError):
@@ -122,6 +123,11 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
         reading_heartbeat_minutes=collector.reading_heartbeat_minutes,
         scanner_restart_if_silent_minutes=collector.scanner_restart_if_silent_minutes,
     )
+    if collector.log_level.upper() not in LOG_LEVELS:
+        raise ConfigError(
+            f"[collector] log_level must be one of {LOG_LEVELS}, got {collector.log_level!r}"
+        )
+    collector = replace(collector, log_level=collector.log_level.upper())
     if base_dir is not None and not collector.db_path.is_absolute():
         collector = replace(collector, db_path=base_dir / collector.db_path)
 

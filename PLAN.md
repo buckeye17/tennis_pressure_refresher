@@ -337,7 +337,8 @@ Config is loaded by `config.py` into typed dataclasses with validation and clear
 
 ### 9.1 Collector (`src/canister_monitor/collector.py`)
 
-- `python -m canister_monitor.collector [--config PATH] [--discover] [--simulate]`
+- `python -m canister_monitor.collector [--config PATH] [--db PATH] [--discover] [--duration SECONDS] [--simulate ...]` (also installed as `canister-collector`).
+- Structure: a synchronous `Pipeline` (advert → rows, no asyncio/bleak) and an async `Collector` (scanner, queue, flush, watchdog). Scanners come from a factory taking a `submit(Advert)` callback, so bleak, the simulator and test fakes are interchangeable.
 - Uses `BleakScanner(detection_callback=...)` in active scan mode (default).
 - Callback converts bleak objects to `Advert`, then runs enabled decoders in order; first match wins.
 - DB writes happen in the asyncio loop via a small queue; never block inside the bleak callback.
@@ -345,14 +346,17 @@ Config is loaded by `config.py` into typed dataclasses with validation and clear
 - Handle SIGTERM/SIGINT cleanly: stop scanner, flush pending writes, close DB.
 - Log one INFO line per stored reading: canister/MAC, psi gauge, °C, RSSI.
 - BlueZ note: Linux may not deliver every repeated identical advert; RSSI changes usually still trigger callbacks. Logic must not depend on receiving duplicates.
+- Windows note (dev only): bleak's WinRT backend reports "device out of range" as an advert with RSSI −127 repeating the last payload; the collector drops these.
 
 ### 9.2 Simulator (`src/canister_monitor/simulate.py`)
 
 Required so agents can develop and test **without BLE hardware**.
 
 - `--simulate` makes the collector feed synthetic `Advert`s (not bleak) into the same pipeline.
-- Generates 4 virtual sensors in format `br_27a5`, each with: a starting pressure (e.g. 25–30 psi gauge), exponential decay toward an equilibrium, a sinusoidal daily temperature cycle (±5 °C) that modulates pressure per the ideal gas law, small noise, and broadcasts on change plus a random heartbeat.
+- Generates 4 virtual sensors in format `fbb0_ac00` (the real B-Qtech format, §5.6), each with: a starting pressure (e.g. 25–30 psi gauge), exponential decay toward an equilibrium, a sinusoidal daily temperature cycle (±5 °C) that modulates pressure per the ideal gas law, small noise, and broadcasts on change (a 3-packet burst) plus a heartbeat every 4.5–6.5 min, and silence at 0 psi — as observed in Phase 0. Changes are detected on the smooth physical value and noise is added only to the transmitted measurement; per-step noise made values flicker across rounding boundaries (~2,800 readings/sensor/day instead of ~280).
 - `--speed N` runs simulated time N× faster (timestamps advance accordingly) so multi-day curves can be generated in minutes.
+- `--start-days-ago D` starts the simulated clock D days back; it fast-forwards at `--speed` and continues in real time once it reaches now, so the dashboard sees realistic history. E.g. `--start-days-ago 3 --speed 2000` (~2 min).
+- Simulated data goes to a separate database (`<db_path stem>-sim.db`, e.g. `data/canisters-sim.db`) unless `--db` is given, so it never mixes with real readings. Simulated canisters are named "Sim canister 1–4" (4 leaks).
 - One simulated sensor should have a slow leak (decline that never plateaus) to exercise trend logic.
 
 ### 9.3 Web (`src/canister_monitor/web/`)

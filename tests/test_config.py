@@ -58,6 +58,7 @@ def test_invalid_toml_message(tmp_path):
         ({"collector": {"decoders": []}}, "at least one decoder"),
         ({"collector": {"reading_heartbeat_minutes": -1}}, "greater than 0"),
         ({"collector": {"db_path": 5}}, "db_path has the wrong type"),
+        ({"collector": {"log_level": "LOUD"}}, "log_level"),
         ({"web": {"port": 70000}}, "port"),
         ({"web": {"port": True}}, "port has the wrong type"),
         ({"web": {"default_units": "atm"}}, "default_units"),

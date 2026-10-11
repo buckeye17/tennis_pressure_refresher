@@ -54,6 +54,23 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 fi
 getent group bluetooth >/dev/null || die "the 'bluetooth' group is missing; is bluez installed?"
 
+say "Turning Bluetooth on"
+# Fresh Raspberry Pi OS images can have Bluetooth soft-blocked (rfkill); systemd-rfkill
+# remembers the unblock across reboots. Then make sure the adapter is powered.
+if command -v rfkill >/dev/null 2>&1; then
+    rfkill unblock bluetooth
+else
+    for r in /sys/class/rfkill/rfkill*; do
+        if [[ $(cat "$r/type" 2>/dev/null) == bluetooth ]]; then
+            echo 0 >"$r/soft"
+        fi
+    done
+fi
+systemctl enable --now bluetooth.service
+sleep 2
+bluetoothctl power on >/dev/null 2>&1 || echo "warning: could not power on the Bluetooth adapter" >&2
+bluetoothctl show | grep -E "Controller|Powered" || echo "warning: no Bluetooth adapter found" >&2
+
 say "Granting $SERVICE_USER Bluetooth access (bluetooth group)"
 # The service gets the group via SupplementaryGroups=; this is for running
 # tools/scan.py by hand. Takes effect at the user's next login.

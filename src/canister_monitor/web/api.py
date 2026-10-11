@@ -23,6 +23,7 @@ from canister_monitor.web import get_db
 api = Blueprint("api", __name__)
 
 MAX_POINTS_LIMIT = 20_000
+TABLE_LIMIT = 1000
 EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 NOTE_MAX = 1000
 
@@ -224,6 +225,51 @@ def readings():
         s["temp_c"].append(p.temp_c)
         s["count"].append(p.count)
     return jsonify({"from": start, "to": end, "series": list(series.values())})
+
+
+def _cursor_arg() -> tuple[float, int] | None:
+    """``before=<ts>_<id>``: the ``next`` value from the previous page."""
+    raw = request.args.get("before")
+    if raw is None or raw == "":
+        return None
+    ts, sep, row_id = raw.rpartition("_")
+    try:
+        cursor = float(ts), int(row_id)
+    except ValueError:
+        cursor = None
+    if not sep or cursor is None or not math.isfinite(cursor[0]):
+        raise ApiError(f"before must be the next value from a previous page, got {raw!r}")
+    return cursor
+
+
+@api.get("/api/readings/table")
+def readings_table():
+    """Individual readings, newest first, a page at a time (no downsampling)."""
+    mac = _mac(request.args.get("mac"))
+    start, end = _range_args()
+    limit = _int_arg("limit", 100, 1, TABLE_LIMIT)
+    before = _cursor_arg()
+    rows = db.recent_readings(
+        get_db(), mac=mac, start=start, end=end, limit=limit + 1, before=before
+    )
+    more, rows = len(rows) > limit, rows[:limit]
+    return jsonify(
+        {
+            "rows": [
+                {
+                    "ts": r.ts,
+                    "mac": r.mac,
+                    "canister": _canister_name(r.mac, r.canister),
+                    **_pressures(r.pressure_kpa_abs, r.temp_c),
+                    "temp_c": r.temp_c,
+                    "battery_pct": r.battery_pct,
+                    "battery_v": r.battery_v,
+                }
+                for r in rows
+            ],
+            "next": f"{rows[-1].ts!r}_{rows[-1].id}" if more else None,
+        }
+    )
 
 
 @api.get("/api/events")

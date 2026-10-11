@@ -204,6 +204,49 @@ def test_readings_bad_params(client, query, message):
     assert message in error_of(client.get(f"/api/readings?{query}"))
 
 
+# --- readings table --------------------------------------------------------------------
+
+
+def test_readings_table_newest_first_with_paging(client):
+    body = client.get("/api/readings/table?limit=25").get_json()
+    rows = body["rows"]
+    assert len(rows) == 25 and body["next"]
+    assert rows[0]["ts"] == NOW - 60 and rows[0]["mac"] == MAC1
+    assert rows[0]["canister"] == "Canister 1"
+    assert rows[0]["gauge_kpa"] == pytest.approx(150.0)
+    assert rows[0]["compensated_gauge_kpa"] < rows[0]["gauge_kpa"]  # 30 degC > reference
+    assert rows[0]["temp_c"] == 30.0
+    seen = rows
+    while body["next"]:
+        body = client.get(f"/api/readings/table?limit=25&before={body['next']}").get_json()
+        seen += body["rows"]
+    assert len(seen) == 62  # every reading, no downsampling
+    assert [r["ts"] for r in seen] == sorted((r["ts"] for r in seen), reverse=True)
+    assert seen[-1]["mac"] == MAC2 and seen[-1]["compensated_gauge_kpa"] is None
+
+
+def test_readings_table_filters(client):
+    rows = client.get(f"/api/readings/table?mac={MAC2}").get_json()["rows"]
+    assert [r["mac"] for r in rows] == [MAC2]
+    body = client.get(f"/api/readings/table?from={NOW - 120}").get_json()
+    assert len(body["rows"]) == 3 and body["next"] is None
+
+
+@pytest.mark.parametrize(
+    "query, message",
+    [
+        ("limit=0", "limit must be between"),
+        ("limit=1001", "limit must be between"),
+        ("before=abc", "before must be the next value"),
+        ("before=nan_3", "before must be the next value"),
+        ("before=5_x", "before must be the next value"),
+        ("mac=nope", "mac must look like"),
+    ],
+)
+def test_readings_table_bad_params(client, query, message):
+    assert message in error_of(client.get(f"/api/readings/table?{query}"))
+
+
 # --- events ---------------------------------------------------------------------------
 
 

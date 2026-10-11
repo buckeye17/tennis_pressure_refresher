@@ -53,6 +53,32 @@
       </p>
     </section>
 
+    <section class="panel" aria-labelledby="table-title">
+      <div class="panel-head">
+        <h2 id="table-title">Readings</h2>
+        <select id="table-mac" aria-label="Canister"><option value="">All canisters</option></select>
+      </div>
+      <div class="table-wrap">
+        <table class="readings">
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Canister</th>
+              <th scope="col" class="num" id="th-pressure">Pressure</th>
+              <th scope="col" class="num" id="th-other">Compensated</th>
+              <th scope="col" class="num" id="th-temp">Temp</th>
+              <th scope="col" class="num">Battery</th>
+            </tr>
+          </thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+      <p class="table-foot">
+        <span class="hint" id="table-count"></span>
+        <button type="button" id="table-more" hidden>Load more</button>
+      </p>
+    </section>
+
     <section class="panel" aria-labelledby="notes-title">
       <h2 id="notes-title">Notes</h2>
       <form id="event-form" class="event-form">

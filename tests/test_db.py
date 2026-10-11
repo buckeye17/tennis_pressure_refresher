@@ -180,6 +180,37 @@ def test_readings_between_rejects_bad_max_points(conn):
         db.readings_between(conn, max_points=0)
 
 
+# --- recent_readings (table paging) ------------------------------------------
+
+
+def test_recent_readings_pages_newest_first(conn):
+    for t in range(10):
+        db.insert_reading(conn, reading(float(t)), None)
+        db.insert_reading(conn, reading(float(t), mac=MAC2), None)  # same ts: tie on id
+    rows, before = [], None
+    while page := db.recent_readings(conn, limit=3, before=before):
+        rows.extend(page)
+        before = (page[-1].ts, page[-1].id)
+    assert len(rows) == 20
+    assert [(r.ts, r.id) for r in rows] == sorted(((r.ts, r.id) for r in rows), reverse=True)
+    assert rows[0].ts == 9.0 and rows[0].mac == MAC2  # inserted last at ts 9
+
+
+def test_recent_readings_filters_and_stays_stable_as_rows_arrive(conn):
+    for t in range(10):
+        db.insert_reading(conn, reading(float(t)), None)
+        db.insert_reading(conn, reading(float(t), mac=MAC2), None)
+    first = db.recent_readings(conn, mac=MAC1, start=2.0, end=7.0, limit=3)
+    assert [r.ts for r in first] == [7.0, 6.0, 5.0]
+    db.insert_reading(conn, reading(6.5), None)  # a new row above the cursor
+    rest = db.recent_readings(
+        conn, mac=MAC1, start=2.0, end=7.0, limit=10, before=(5.0, first[-1].id)
+    )
+    assert [r.ts for r in rest] == [4.0, 3.0, 2.0]
+    with pytest.raises(ValueError):
+        db.recent_readings(conn, limit=0)
+
+
 # --- events -----------------------------------------------------------------
 
 

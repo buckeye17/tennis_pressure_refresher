@@ -165,6 +165,40 @@ a { color: var(--accent); }
 }
 .tip[hidden] { display: none; }
 
+/* --- table ---------------------------------------------------------------- */
+
+.panel-head select, .table-foot button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 4px 8px;
+  min-height: 32px;
+}
+
+.table-wrap { overflow: auto; max-height: 480px; border-top: 1px solid var(--border); }
+.readings { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.readings th, .readings td { padding: 6px 10px; text-align: left; white-space: nowrap; }
+.readings th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.readings td { border-bottom: 1px solid var(--grid); }
+.readings .num { text-align: right; font-variant-numeric: tabular-nums; }
+.readings .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.readings .muted { color: var(--muted); }
+.readings .none { color: var(--muted); text-align: center; padding: 16px; }
+.readings .swatch {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  background: var(--c); margin-right: 6px; vertical-align: 1px;
+}
+.table-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 16px; margin: 10px 0 0; font-size: 0.85rem; }
+.table-foot .hint { color: var(--muted); }
+.table-foot button { cursor: pointer; }
+.table-foot button[hidden] { display: none; }
+
 /* --- events --------------------------------------------------------------- */
 
 .event-form { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }

@@ -60,6 +60,10 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_events_ts ON events(ts);
     """,
+    # 2: newest-first paging across all sensors (table view)
+    """
+    CREATE INDEX idx_readings_ts ON readings(ts);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -329,6 +333,7 @@ def newest_reading_ts(conn: sqlite3.Connection) -> float | None:
 
 @dataclass(frozen=True)
 class StoredReading:
+    id: int
     ts: float
     mac: str
     canister: str | None
@@ -336,6 +341,10 @@ class StoredReading:
     temp_c: float | None
     battery_pct: float | None
     battery_v: float | None
+
+
+_STORED_COLUMNS = """r.id, r.ts, r.mac, s.canister, r.pressure_kpa_abs, r.temp_c,
+                   r.battery_pct, r.battery_v"""
 
 
 def all_readings(
@@ -347,11 +356,38 @@ def all_readings(
     """Every reading in the range (no downsampling), ordered by time; used for export."""
     cond, params = _range_condition(mac, start, end, table="r.")
     rows = conn.execute(
-        f"""SELECT r.ts, r.mac, s.canister, r.pressure_kpa_abs, r.temp_c,
-                   r.battery_pct, r.battery_v
+        f"""SELECT {_STORED_COLUMNS}
             FROM readings r LEFT JOIN sensors s ON s.mac = r.mac
             WHERE {cond} ORDER BY r.ts, r.id""",
         params,
+    ).fetchall()
+    return [StoredReading(**dict(r)) for r in rows]
+
+
+def recent_readings(
+    conn: sqlite3.Connection,
+    mac: str | None = None,
+    start: float | None = None,
+    end: float | None = None,
+    limit: int = 100,
+    before: tuple[float, int] | None = None,
+) -> list[StoredReading]:
+    """One page of readings, newest first (no downsampling); used for the table view.
+
+    ``before`` is the ``(ts, id)`` of the last row of the previous page. Paging by
+    that key, not by offset, keeps pages stable while new readings arrive.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    cond, params = _range_condition(mac, start, end, table="r.")
+    if before is not None:
+        cond += " AND (r.ts < :before_ts OR (r.ts = :before_ts AND r.id < :before_id))"
+        params.update(before_ts=before[0], before_id=before[1])
+    rows = conn.execute(
+        f"""SELECT {_STORED_COLUMNS}
+            FROM readings r LEFT JOIN sensors s ON s.mac = r.mac
+            WHERE {cond} ORDER BY r.ts DESC, r.id DESC LIMIT :limit""",
+        {**params, "limit": limit},
     ).fetchall()
     return [StoredReading(**dict(r)) for r in rows]
 

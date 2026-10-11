@@ -14,6 +14,8 @@
   };
   const POLL_CANISTERS_MS = 30_000;
   const POLL_READINGS_MS = 60_000;
+  const TABLE_PAGE = 100;
+  const TABLE_MAX = 1000; // server's per-request limit
   const PREFS_KEY = "canister-monitor-prefs";
 
   // --- state and preferences ----------------------------------------------------
@@ -29,6 +31,7 @@
     events: [],
     skew: 0, // server clock minus browser clock, seconds
     colors: new Map(),
+    table: { mac: "", rows: [], next: null, seq: 0 },
   };
 
   function loadPrefs() {
@@ -84,6 +87,13 @@
 
   const fmtDateTime = (ts) =>
     new Date(ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const fmtDateTimeSec = (ts) =>
+    new Date(ts * 1000).toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit",
+    });
+
+  const fmtBattery = (r) =>
+    r.battery_pct != null ? `${Math.round(r.battery_pct)} %` : r.battery_v != null ? `${r.battery_v.toFixed(2)} V` : "—";
 
   function colorFor(mac) {
     if (!state.colors.has(mac)) state.colors.set(mac, PALETTE[state.colors.size % PALETTE.length]);
@@ -187,8 +197,7 @@
       const shown = r && (state.compensated && comp != null ? comp : r.gauge_kpa);
       const other = r && (state.compensated ? r.gauge_kpa : comp);
       const age = r ? serverNow() - r.ts : null;
-      const battery = r && (r.battery_pct != null ? `${Math.round(r.battery_pct)} %`
-        : r.battery_v != null ? `${r.battery_v.toFixed(2)} V` : "—");
+      const battery = r && fmtBattery(r);
       const trend = trendLine(c.trend);
       const filled = c.trend && c.trend.session_source === "fill"
         ? `Filled ${fmtDays(serverNow() - c.trend.session_start)} ago` : null;
@@ -213,8 +222,7 @@
     }
   }
 
-  function renderEventCanisterOptions() {
-    const select = $("#event-mac");
+  function renderCanisterOptions(select) {
     const current = select.value;
     select.replaceChildren(el("option", { value: "" }, "All canisters"),
       ...state.canisters.map((c) => el("option", { value: c.mac }, c.canister || c.mac)));
@@ -364,6 +372,66 @@
     }
   }
 
+  // --- table -------------------------------------------------------------------------
+
+  /** Fetch the table's first page, or the next page when `more`. A refresh re-fetches
+   * as many rows as are showing, so polling doesn't undo "Load more". */
+  async function loadTable(more = false) {
+    const t = state.table;
+    const seq = ++t.seq;
+    const params = rangeQuery();
+    if (t.mac) params.set("mac", t.mac);
+    if (more) params.set("before", t.next);
+    params.set("limit", String(more ? TABLE_PAGE : Math.min(TABLE_MAX, Math.max(TABLE_PAGE, t.rows.length))));
+    const body = await api(`/api/readings/table?${params}`);
+    if (seq !== t.seq) return; // a newer load replaced this one
+    t.rows = more ? t.rows.concat(body.rows) : body.rows;
+    t.next = body.next;
+    renderTable();
+  }
+
+  function renderTable() {
+    const { rows, next } = state.table;
+    const unit = state.units;
+    $("#th-pressure").textContent = `${state.compensated ? "Compensated" : "Gauge"} (${unit})`;
+    $("#th-other").textContent = `${state.compensated ? "Raw" : "Compensated"} (${unit})`;
+    $("#th-temp").textContent = `Temp (°${state.tempUnit})`;
+    const fmtT = (c) => (c == null ? "—" : toTemp(c).toFixed(state.tempUnit === "F" ? 0 : 1));
+
+    const body = $("#table-body");
+    body.replaceChildren();
+    if (rows.length === 0) {
+      body.append(el("tr", {}, el("td", { class: "none", colspan: 6 }, "No readings in this range.")));
+    }
+    for (const r of rows) {
+      const comp = r.compensated_gauge_kpa;
+      const shown = state.compensated && comp != null ? comp : r.gauge_kpa;
+      const other = state.compensated ? r.gauge_kpa : comp;
+      body.append(el("tr", {},
+        el("td", { class: "when" }, fmtDateTimeSec(r.ts)),
+        el("td", {}, el("span", { class: "swatch", style: `--c:${colorFor(r.mac)}` }), r.canister || r.mac),
+        el("td", { class: "num" }, fmtPressure(toPressure(shown))),
+        el("td", { class: "num muted" }, fmtPressure(toPressure(other))),
+        el("td", { class: "num" }, fmtT(r.temp_c)),
+        el("td", { class: "num" }, fmtBattery(r))));
+    }
+    $("#table-count").textContent = rows.length
+      ? `${rows.length} reading${rows.length === 1 ? "" : "s"}, newest first${next ? "" : " (all in range)"}` : "";
+    $("#table-more").hidden = !next;
+  }
+
+  async function loadMore() {
+    const button = $("#table-more");
+    button.disabled = true;
+    try {
+      await loadTable(true);
+    } catch (e) {
+      setStatus(false, `Could not load more readings (${e.message})`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // --- events (notes) ------------------------------------------------------------------
 
   function renderEvents() {
@@ -434,7 +502,8 @@
       for (const c of state.canisters) colorFor(c.mac); // stable colors in card order
       $("#range-fill").disabled = lastFill() == null;
       renderCards();
-      renderEventCanisterOptions();
+      renderCanisterOptions($("#event-mac"));
+      renderCanisterOptions($("#table-mac"));
       setStatus(true, `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`);
     } catch (e) {
       setStatus(false, `Offline — retrying (${e.message})`);
@@ -450,6 +519,7 @@
       const [readings, events] = await Promise.all([
         api(`/api/readings?${params}`),
         api(`/api/events?${rangeQuery()}`),
+        loadTable(),
       ]);
       state.series = readings.series;
       state.events = events.events;
@@ -479,10 +549,11 @@
 
   function init() {
     loadPrefs();
-    bindSegment("#units", () => state.units, (v) => { state.units = v; renderCards(); renderCharts(); });
-    bindSegment("#temp-units", () => state.tempUnit, (v) => { state.tempUnit = v; renderCards(); renderCharts(); });
+    bindSegment("#units", () => state.units, (v) => { state.units = v; renderCards(); renderCharts(); renderTable(); });
+    bindSegment("#temp-units", () => state.tempUnit, (v) => { state.tempUnit = v; renderCards(); renderCharts(); renderTable(); });
     bindSegment("#ranges", () => state.range, (v) => {
       state.range = v === "fill" ? "fill" : Number(v);
+      state.table.rows = []; // new range: start from one page again
       refreshReadings();
     });
     const comp = $("#compensated");
@@ -492,8 +563,15 @@
       savePrefs();
       renderCards();
       renderCharts();
+      renderTable();
     });
     $("#event-form").addEventListener("submit", addEvent);
+    $("#table-mac").addEventListener("change", (e) => {
+      state.table.mac = e.target.value;
+      state.table.rows = [];
+      loadTable().catch((ex) => setStatus(false, `Offline — retrying (${ex.message})`));
+    });
+    $("#table-more").addEventListener("click", loadMore);
 
     new ResizeObserver(resizeCharts).observe($("main"));
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {

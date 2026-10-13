@@ -32,6 +32,7 @@ This document is the source of truth for building this project. It is written fo
 4. Provide temperature-compensated pressure so real trends can be separated from day/night temperature swings.
 5. Allow CSV export and simple annotations ("filled to 30 psi", "added 3 balls").
 6. Run unattended: start on boot, recover from Bluetooth stalls.
+7. Predict how the balls bounce (Phase 8, §6.2): whether they rebound like new and whether they would pass the ITF rebound test, from canister pressure and occasional bounce tests.
 
 ### Non-goals
 
@@ -239,7 +240,7 @@ Statuses: `insufficient_data` (fewer than 6 readings, or they span less than hal
 
 ### 6.1 Leak calibration (Phase 8, `leak.py`)
 
-**Goal:** subtract each canister's leak from a ball cycle, so the rest of the pressure drop measures the air that went into the balls. The canister is used in two modes: **maintain** (filled to ~20 psi, to hold the balls at pressure) and **recharge** (filled to ~50 psi, to add pressure; the balls do not reach canister pressure).
+**Goal:** subtract each canister's leak from a ball cycle, so the rest of the pressure drop measures the air that went into the balls. Since bounce tests were added (§6.2), this mass balance is a **cross-check**, not the main prediction. It is most informative for large batches, because the canister notices the balls in proportion to the air they hold relative to its free volume. The canister is used in two modes: **maintain** (filled to ~20 psi, to hold the balls at pressure) and **recharge** (filled to ~50 psi, to add pressure; the balls do not reach canister pressure).
 
 **Leak tests.** The canister is filled with no balls and left alone. The user logs a `leak_test` event at the fill. The test runs until the next `fill`, `leak_test`, `vent` or `balls_added` event for that canister (or all canisters). Each test starts with the canister fully vented, lid opened and closed, refilled, and the sensor re-seated, just like a real cycle, so tests sample seal variation. Recommended 7-day protocol: 50 psi for 60 h, 20 psi for 60 h, 50 psi for 48 h (three seatings, both pressures). In simulation, every 7-day split of 2–4 tests did about equally well: ±0.07–0.08 psi/day at 20 psi and ±0.12–0.17 at 50. One 7-day test is no better and says nothing about seal variation. Extra time: a fourth test at 50 psi (3 days) gave the best gain at 50 psi (±0.10). Beyond ~10 days, testing adds little, because the remaining error is mostly the seal variation itself.
 
@@ -262,6 +263,49 @@ Findings:
 - **Weather limits the 20 psi tests.** A 72 h test at 20 psi measures its rate to only about ±55% (±0.06 psi/day). β is barely identifiable without a barometer, which recovers it without bias.
 - **When seals vary (τ ≈ 0.4), that variation is the floor.** Predicting a new session's leak is uncertain by ±0.06–0.11 psi/day however well μ is known. Over a 7-day recharge cycle that is about 0.4–0.8 psi of canister pressure. With repeatable seals (τ ≈ 0.1) it is ±0.03 psi/day.
 - The leak magnitude here is a guess. Real errors scale with the real leak.
+
+### 6.2 Bounce model and predictions (Phase 8, `bounce.py`)
+
+**Goal:** predict, at any time, how a batch of balls bounces, and report two two-sided criteria as the **share of the batch** that meets them:
+
+| | Like-new | ITF rebound |
+|---|---|---|
+| Question | Do they bounce like new balls of this kind, tested the same way? | Would they pass the ITF rebound test? |
+| Pass band | New-ball mean rebound ± `like_new_tolerance_pct` (default ±5%) | 134.62–147.32 cm (53–58 in) from 254 cm (100 in) onto concrete at 20 °C. Configurable, e.g. 48–53 in for high-altitude balls |
+| Needs | Tests at one fixed setup (drop height, surface, method), used consistently | Tests at ITF conditions, **or** a one-time conversion between the user's setup and ITF conditions |
+
+Both bands are two-sided. Over-pressurized balls bounce too high, and a long recharge can overshoot, so the app warns before the upper limit as well as reporting when balls are back in the band. "ITF rebound" covers only the rebound criterion: ITF also sets limits on deformation, mass and size, which the app does not predict.
+
+**Batches and bounce tests.** A batch is a set of balls of one brand and model opened together. The user numbers a sample: every ball if the batch has about 12 or fewer, otherwise 10–12 balls picked at random **once**, when the batch is new, and tested every time after. Repeating the same balls cancels ball-to-ball differences in before/after comparisons, and ≥10 balls give a usable spread. A test is 3 drops per sampled ball, median taken, read from slow-motion video against a tape measure (reading by eye is good to only about ±1–2 in). Rebound is measured to the bottom of the ball, released with its bottom at the drop height. Test context: `new` (straight from the can), `before` / `after` a canister session (within ~30 min of opening), `after_play`, or `other`. Room temperature is recorded with each test (the canister sensor's reading if tested in the same room).
+
+**New-ball reference** (for like-new), first available of:
+1. this batch's own `new` tests;
+2. `new` tests of other batches of the same brand and model, at the same setup;
+3. a value the user enters: per brand and model and setup (for balls never tested new), or as an override on one batch.
+
+The source is shown with the prediction. Without any of them, like-new is unavailable for that batch.
+
+**Uptake model.** Air moves through the rubber at a rate proportional to the pressure difference. In bounce units, for the batch-mean rebound B:
+
+```
+dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
+```
+
+- P is the compensated gauge pressure around the balls: the **measured** canister pressure while they are in a canister, 0 outside one.
+- B_eq(P) is the rebound the balls would settle at if they caught up to P. **a** is the rebound of a fully flat ball, **b** the rebound per psi, and **k** how fast the balls respond (per day).
+- Because P is measured, this needs neither the leak calibration nor canister or ball volumes. The same equation describes slow loss on the shelf (P = 0).
+- k, a and b belong to one brand and model at one setup. They are fitted by least squares to before/after test pairs: predict each "after" mean by integrating the equation over the measured P(t) from the "before" mean, and weight each pair by its test errors. Identifying all three needs pairs at more than one pressure: maintain (~20 psi), recharge (~50 psi) and storage (0). Until they are fitted, the app reports tests only (e.g. "last test: 96% of new").
+- Temperature: rebound rises with ball temperature. Each test is corrected to 20 °C with a coefficient learned from the tests, or held at 0 (and flagged) until the temperatures recorded vary enough to fit it.
+- Each new test resets the batch state to the measured mean, so model error does not carry over between sessions.
+- Not modelled yet: rubber ageing and felt wear (a slow drift of a). Residuals that trend downward over a batch's life would show them.
+
+**Share passing.** Per-ball rebounds are taken as Normal(predicted batch mean, between-ball sd from the latest test), and the share inside each band is computed from that. The batch mean itself is uncertain by the fit error, so this is reported as an approximate range.
+
+**Projections:** time until the batch mean enters the like-new or ITF band, and time until it would leave the band at the top, at the current canister pressure.
+
+**ITF from a non-ITF setup.** Rebound is not proportional to drop height, and other surfaces absorb energy, so there is no reliable formula. Instead the user does one conversion session: about 10 balls ranging from new to flat, each dropped at the user's setup and at 254 cm onto concrete, on the same day. A straight line fitted to those pairs maps the user's rebounds to ITF rebounds. Without it, ITF predictions show as "not calibrated".
+
+**Mass-balance cross-check** (needs canister volume and ball count). The canister pressure drop not explained by the leak gives ΔP_ball (§6.1); the bounce tests give ΔB / b. If the two disagree consistently, the leak calibration or the volumes are off. Diagnostic only.
 
 ---
 
@@ -314,6 +358,60 @@ CREATE TABLE events (
 );
 ```
 
+**Planned (Phase 8, §6.2).** Lengths are stored in cm, as the canonical unit; the UI shows inches or cm.
+
+```sql
+CREATE TABLE ball_batches (
+    id         INTEGER PRIMARY KEY,
+    brand      TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    opened_ts  REAL NOT NULL,
+    n_balls    INTEGER NOT NULL,
+    sample     TEXT NOT NULL,           -- JSON list of the numbered balls that get tested
+    reference_override_cm REAL,          -- manual new-ball rebound for this batch, if any
+    retired_ts REAL,
+    note       TEXT
+);
+
+CREATE TABLE bounce_setups (            -- one per way of testing; never edited once used
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,     -- e.g. "garage slab, 100 in"
+    drop_cm    REAL NOT NULL,
+    is_itf     INTEGER NOT NULL          -- 1: 254 cm onto concrete, ITF method
+);
+
+CREATE TABLE bounce_drops (
+    id         INTEGER PRIMARY KEY,
+    ts         REAL NOT NULL,
+    batch_id   INTEGER NOT NULL REFERENCES ball_batches(id),
+    ball_no    INTEGER NOT NULL,
+    setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
+    rebound_cm REAL NOT NULL,
+    temp_c     REAL,
+    context    TEXT NOT NULL,            -- new | before | after | after_play | other
+    note       TEXT
+);
+
+CREATE TABLE reference_rebounds (       -- user-entered new-ball rebound per brand/model/setup
+    brand      TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
+    rebound_cm REAL NOT NULL,
+    PRIMARY KEY (brand, model, setup_id)
+);
+
+CREATE TABLE setup_conversions (        -- ITF conversion session: same ball, both setups
+    id         INTEGER PRIMARY KEY,
+    ts         REAL NOT NULL,
+    setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
+    rebound_cm REAL NOT NULL,            -- at the user's setup
+    itf_rebound_cm REAL NOT NULL
+);
+
+ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id);
+-- balls_added / balls_removed name the batch, so the app knows which batch sat in which canister when
+```
+
 **Write policy (collector):**
 - Store a raw advert when its payload differs from the previous one for that MAC, **or** at most once per `raw_heartbeat_minutes` (default 10) if unchanged.
 - Store a reading when the decoded values differ from the previous reading for that MAC, **or** at most once per `reading_heartbeat_minutes` (default 1) if unchanged. This approximates the "once a minute" goal when the sensor broadcasts often, without bloating the DB.
@@ -364,6 +462,17 @@ canister = "Canister 1"
 mac = "AA:BB:CC:DD:EE:02"
 canister = "Canister 2"
 ```
+
+Planned for Phase 8 (§6.2):
+
+```toml
+[bounce]
+like_new_tolerance_pct = 5.0     # like-new band: new-ball mean +- this percentage
+itf_rebound_in = [53.0, 58.0]    # [48.0, 53.0] for high-altitude balls
+display_units = "in"             # in | cm
+```
+
+Bounce setups, batches, reference values and the ITF conversion are data, entered in the dashboard, not config.
 
 Config is loaded by `config.py` into typed dataclasses with validation and clear error messages. Both processes accept `--config PATH`.
 
@@ -572,16 +681,33 @@ Acceptance: simulator's leaking sensor is flagged; plateaued sensors are labeled
 
 As built: `trends.py` is pure (no DB/web). `/api/canisters` returns `trend: {status, slope_kpa_per_day, levelled_since, session_start, session_source, window_s}`. Cards show e.g. "▼ 0.83 psi/day · still dropping", "✓ Levelled off", or (red) "still dropping 4.5 days after fill — check for a leak", plus "Filled N days ago". The chart's **Since fill** range starts at the most recent fill note. Verified on 20 simulator seeds × 7 days: 60/60 healthy canisters levelled off, 20/20 leaks flagged.
 
-### Phase 8 — Leak calibration and ball pressure *(in progress)*
+### Phase 8 — Ball bounce predictions *(in progress)*
 
-Goal per §6.1: learn each canister's leak from empty-canister tests, then infer how much pressure the balls gained in each cycle.
+Goal per §6.2: predict whether each batch of balls rebounds like new and within the ITF band, from canister pressure and occasional bounce tests. Leak calibration (§6.1) feeds the mass-balance cross-check.
 
-Done: `leak.py` (session fit, calibration across sessions), `leak_test` event kind (dashboard menu; counts as a fill for trends), `db.leak_test_spans`, `simulate.leak_test_readings`, `tools/leak_sim.py`, tests.
+Done (8a, leak calibration): `leak.py` (session fit, calibration across sessions), `leak_test` event kind (dashboard menu; counts as a fill for trends), `db.leak_test_spans`, `simulate.leak_test_readings`, `tools/leak_sim.py`, tests.
 
-Next:
-1. `/api/leak-calibration?mac=`: sessions with their rates and errors, plus μ, β, τ (cache it; a fit takes ~0.5 s on a PC, maybe 5 s on a Pi 3), and a calibration panel showing each session's rate with error bars.
-2. Per-canister config: internal volume, ball count, ball inner/outer volume (defaults ~117/157 cm³).
-3. Ball-cycle inference. Free volume V_free = V − N·V_outer. Leak during a cycle uses `rate_range` at the cycle's pressure, scaled by V/V_free. Ball gain ΔP_ball = (drop not explained by leak) × V_free / (N·V_inner). Mode (maintain/recharge) is inferred from the fill pressure. In maintain mode, a levelled-off canister also gives the balls' absolute pressure. In recharge mode, the leak range is the only constraint (the balls never catch up), so its uncertainty carries straight through.
+Next, in order. Data collection comes first because it takes the longest:
+
+- **8b — Batches and bounce tests.** Tables in §7 (migration), and dashboard forms to:
+  - create a batch (brand, model, size, numbered sample);
+  - define a test setup;
+  - enter a bounce test (3 drops per sampled ball, with the canister sensor's temperature pre-filled);
+  - enter reference rebounds and ITF conversion pairs.
+
+  `balls_added` / `balls_removed` take a batch. Bounce data goes in the CSV export.
+
+  Acceptance: a test can be entered on a phone in under a minute per ball, and edited or deleted.
+- **8c — Like-new from tests.** Resolve the new-ball reference (own → same brand/model → manual, with the source shown). Show each test as a share of new and the share of sampled balls in the like-new band. A batch chart shows tests as points with the band.
+
+  Acceptance: unit tests for reference resolution and band shares.
+- **8d — Uptake model.** Fit k, a, b (and the temperature coefficient) per brand/model/setup. Predict the batch mean between tests from measured canister pressure (0 when out). Show the share of the batch passing, entry and overshoot times, and the prediction line on the batch chart.
+
+  First extend the simulator with bounce data (balls with known k, a, b, test noise, ball-to-ball spread) and a `tools/bounce_sim.py` that checks the fit recovers them. It should also report how many sessions, and at which pressures, are needed before predictions are trustworthy.
+
+  Acceptance: the simulator truth is recovered within its stated errors; predictions are hidden until the fit is identified.
+- **8e — ITF rebound.** Use ITF setups directly, or map a non-ITF setup through the conversion fit. Correct to 20 °C. Show "not calibrated" otherwise.
+- **8f — Mass-balance cross-check.** Per-canister config for internal volume. Ball count comes from the batch events, and ball volumes default to ~117 / 157 cm³ (inner / outer). Add `/api/leak-calibration`, with a panel showing each leak test's rate and error bars, and compare ΔP_ball from mass balance with ΔB / b.
 
 ---
 

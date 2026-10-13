@@ -269,7 +269,14 @@ def test_create_event_defaults_ts_to_now(client):
 def test_create_event_with_mac_and_ts(client):
     resp = client.post("/api/events", json={"kind": "balls_added", "mac": MAC1.lower(), "ts": 5})
     assert resp.status_code == 201
-    assert resp.get_json() == {"id": 3, "ts": 5.0, "mac": MAC1, "kind": "balls_added", "note": None}
+    assert resp.get_json() == {
+        "id": 3,
+        "ts": 5.0,
+        "mac": MAC1,
+        "kind": "balls_added",
+        "note": None,
+        "batch_id": None,
+    }
 
 
 @pytest.mark.parametrize(

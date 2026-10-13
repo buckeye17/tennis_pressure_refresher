@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-default-units="{{ config.web.default_units }}">
+<html lang="en" data-default-units="{{ config.web.default_units }}" data-length-units="{{ config.bounce.display_units }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -53,6 +53,69 @@
       </p>
     </section>
 
+    <section class="panel balls" aria-labelledby="balls-title">
+      <div class="panel-head">
+        <h2 id="balls-title">Balls</h2>
+        <div class="head-actions">
+          <div class="seg" id="length-units" role="group" aria-label="Length units">
+            <button type="button" data-value="in">in</button>
+            <button type="button" data-value="cm">cm</button>
+          </div>
+          <button type="button" class="primary" id="batch-new">New batch</button>
+        </div>
+      </div>
+      <p class="hint" id="balls-setup-hint" hidden>Start by adding a test setup below: the drop height and surface you'll always test with.</p>
+      <div class="batches" id="batches"></div>
+      <label class="toggle small" id="show-retired-wrap" hidden><input type="checkbox" id="show-retired"> Show retired batches</label>
+      <p class="form-error" id="balls-error" role="alert"></p>
+
+      <details class="sub" id="setups-box">
+        <summary>Test setups</summary>
+        <p class="hint">How you test: drop height and surface. Pick one and keep using it, so tests compare. A setup can't be changed once used.</p>
+        <ul class="mini" id="setups"></ul>
+        <form id="setup-form" class="inline-form">
+          <input id="setup-name" maxlength="60" placeholder="Name, e.g. Garage slab" aria-label="Setup name" required>
+          <span class="with-unit"><input id="setup-drop" inputmode="decimal" placeholder="Drop height" aria-label="Drop height" required><span class="len-unit"></span></span>
+          <label class="toggle"><input type="checkbox" id="setup-itf"> ITF method: 100 in onto concrete</label>
+          <input id="setup-note" maxlength="1000" placeholder="Note (optional)" aria-label="Note">
+          <button type="submit">Add setup</button>
+          <span class="form-error" id="setup-error" role="alert"></span>
+        </form>
+      </details>
+
+      <details class="sub">
+        <summary>New-ball reference values</summary>
+        <p class="hint">Like-new compares against new balls tested the same way: a batch's own new-ball tests, then other batches of the same brand and model. Enter a value here for balls you never tested new. To set one for a single batch, edit the batch.</p>
+        <ul class="mini" id="references"></ul>
+        <form id="ref-form" class="inline-form">
+          <input id="ref-brand" list="brand-list" maxlength="60" placeholder="Brand" aria-label="Brand" required>
+          <input id="ref-model" list="model-list" maxlength="60" placeholder="Model" aria-label="Model" required>
+          <select id="ref-setup" aria-label="Setup" required></select>
+          <span class="with-unit"><input id="ref-rebound" inputmode="decimal" placeholder="New-ball rebound" aria-label="New-ball rebound" required><span class="len-unit"></span></span>
+          <button type="submit">Save value</button>
+          <span class="form-error" id="ref-error" role="alert"></span>
+        </form>
+      </details>
+
+      <details class="sub">
+        <summary>ITF conversion</summary>
+        <p class="hint">Only needed when your setup isn't the ITF method. On one day, drop about 10 balls, from new to flat, both your way and from 100 in onto concrete. Enter one pair per ball.</p>
+        <ul class="mini" id="conversions"></ul>
+        <p class="hint" id="conv-none" hidden>All your setups are already the ITF method.</p>
+        <form id="conv-form" class="inline-form">
+          <select id="conv-setup" aria-label="Your setup" required></select>
+          <span class="with-unit"><input id="conv-rebound" inputmode="decimal" placeholder="Your rebound" aria-label="Rebound at your setup" required><span class="len-unit"></span></span>
+          <span class="with-unit"><input id="conv-itf" inputmode="decimal" placeholder="ITF rebound" aria-label="Rebound from 100 in onto concrete" required><span class="len-unit"></span></span>
+          <button type="submit">Add pair</button>
+          <span class="form-error" id="conv-error" role="alert"></span>
+        </form>
+      </details>
+
+      <p class="chart-foot"><a id="bounce-export" href="/api/bounce.csv" download>Download bounce data (CSV)</a></p>
+      <datalist id="brand-list"></datalist>
+      <datalist id="model-list"></datalist>
+    </section>
+
     <section class="panel" aria-labelledby="table-title">
       <div class="panel-head">
         <h2 id="table-title">Readings</h2>
@@ -91,6 +154,7 @@
           <option value="balls_added">Balls added</option>
           <option value="balls_removed">Balls removed</option>
         </select>
+        <select id="event-batch" aria-label="Ball batch" hidden><option value="">No batch</option></select>
         <input id="event-note" type="text" maxlength="1000" placeholder="e.g. filled to 30 psi" aria-label="Note">
         <input id="event-when" type="datetime-local" aria-label="When (leave empty for now)" title="When (leave empty for now)">
         <button type="submit">Add</button>
@@ -99,6 +163,48 @@
       <ul class="events" id="events"></ul>
     </section>
   </main>
+
+  <dialog id="batch-dialog" aria-labelledby="batch-title">
+    <form id="batch-form" class="dialog-form">
+      <h2 id="batch-title">New ball batch</h2>
+      <div class="fields">
+        <label>Brand <input id="batch-brand" list="brand-list" maxlength="60" required></label>
+        <label>Model <input id="batch-model" list="model-list" maxlength="60" required></label>
+        <label>Opened <input id="batch-opened" type="date" required></label>
+        <label>Balls in batch <input id="batch-n" type="number" min="1" max="500" step="1" inputmode="numeric" required></label>
+        <label>Balls to test <input id="batch-sample" type="number" min="1" max="500" step="1" inputmode="numeric" required></label>
+        <label>New-ball rebound, if known <span class="with-unit"><input id="batch-ref" inputmode="decimal" placeholder="optional"><span class="len-unit"></span></span></label>
+        <label class="wide">Note <input id="batch-note" maxlength="1000" placeholder="optional, e.g. box A"></label>
+      </div>
+      <p class="hint" id="batch-sample-hint"></p>
+      <p class="form-error" id="batch-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="test-dialog" aria-labelledby="test-title">
+    <form id="test-form" class="dialog-form" novalidate>
+      <h2 id="test-title">Bounce test</h2>
+      <div class="fields">
+        <label>Setup <select id="test-setup" required></select></label>
+        <label>Stage <select id="test-context"></select></label>
+        <label>Time (blank = now) <input id="test-when" type="datetime-local"></label>
+        <label>Room temp <span class="with-unit"><input id="test-temp" inputmode="decimal"><span id="test-temp-unit"></span></span></label>
+        <label class="wide">Note <input id="test-note" maxlength="1000" placeholder="optional"></label>
+      </div>
+      <p class="hint">Measure to the bottom of the ball. Units: <span class="len-unit"></span>. Enter moves to the next box; empty boxes are skipped.</p>
+      <div class="ball-grid" id="test-grid"></div>
+      <p class="test-summary" id="test-summary" aria-live="polite"></p>
+      <p class="form-error" id="test-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary" id="test-save">Save test</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="{{ url_for('static', filename='vendor/uplot/uPlot.iife.min.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js', v=version) }}"></script>

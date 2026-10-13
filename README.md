@@ -74,6 +74,22 @@ cd ~/tennis_pressure_refresher && git pull && sudo deploy/install.sh
 
 Re-running the installer is safe: it keeps your `config.toml` and data.
 
+## Ball batches and bounce tests
+
+The **Balls** panel tracks how your balls bounce, as planned in [PLAN.md §6.2](PLAN.md):
+
+1. **Add a test setup once:** the drop height and surface you'll always use. Tick *ITF method* if you
+   drop from 100 in onto concrete.
+2. **Add a batch** when you open new balls. For more than 12 balls, pick 10 at random, number them
+   1–10 with a marker, and always test those same balls.
+3. **Bounce test** new balls straight from the can, then before and after each canister session.
+   Drop each numbered ball 3 times and type the rebound height, measured to the bottom of the ball.
+   Slow-motion phone video against a tape measure is much more precise than reading by eye.
+4. When you put balls in a canister or take them out, add a **Balls added** / **Balls removed**
+   note and pick the batch, so the app knows where each batch is.
+
+*Download bounce data (CSV)* exports every drop.
+
 ## How the sensors behave
 
 - They **only broadcast under pressure**. An unscrewed or empty sensor goes silent, and its card

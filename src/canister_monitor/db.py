@@ -64,6 +64,67 @@ MIGRATIONS: list[str] = [
     """
     CREATE INDEX idx_readings_ts ON readings(ts);
     """,
+    # 3: ball batches and bounce tests (PLAN.md 6.2)
+    """
+    CREATE TABLE bounce_setups (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        drop_cm    REAL NOT NULL,
+        is_itf     INTEGER NOT NULL DEFAULT 0,
+        note       TEXT
+    );
+
+    CREATE TABLE ball_batches (
+        id          INTEGER PRIMARY KEY,
+        brand       TEXT NOT NULL COLLATE NOCASE,
+        model       TEXT NOT NULL COLLATE NOCASE,
+        opened_ts   REAL NOT NULL,
+        n_balls     INTEGER NOT NULL,
+        sample_size INTEGER NOT NULL,
+        reference_override_cm REAL,
+        retired_ts  REAL,
+        note        TEXT
+    );
+
+    CREATE TABLE bounce_tests (
+        id        INTEGER PRIMARY KEY,
+        ts        REAL NOT NULL,
+        batch_id  INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+        setup_id  INTEGER NOT NULL REFERENCES bounce_setups(id),
+        context   TEXT NOT NULL,
+        temp_c    REAL,
+        note      TEXT
+    );
+    CREATE INDEX idx_bounce_tests_batch ON bounce_tests(batch_id, ts);
+
+    CREATE TABLE bounce_drops (
+        id         INTEGER PRIMARY KEY,
+        test_id    INTEGER NOT NULL REFERENCES bounce_tests(id) ON DELETE CASCADE,
+        ball_no    INTEGER NOT NULL,
+        rebound_cm REAL NOT NULL
+    );
+    CREATE INDEX idx_bounce_drops_test ON bounce_drops(test_id);
+
+    CREATE TABLE reference_rebounds (
+        id         INTEGER PRIMARY KEY,
+        brand      TEXT NOT NULL COLLATE NOCASE,
+        model      TEXT NOT NULL COLLATE NOCASE,
+        setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
+        rebound_cm REAL NOT NULL,
+        UNIQUE (brand, model, setup_id)
+    );
+
+    CREATE TABLE setup_conversions (
+        id             INTEGER PRIMARY KEY,
+        ts             REAL NOT NULL,
+        setup_id       INTEGER NOT NULL REFERENCES bounce_setups(id),
+        rebound_cm     REAL NOT NULL,
+        itf_rebound_cm REAL NOT NULL,
+        note           TEXT
+    );
+
+    ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id) ON DELETE SET NULL;
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -402,14 +463,21 @@ class Event:
     mac: str | None
     kind: str
     note: str | None
+    batch_id: int | None = None  # balls_added / balls_removed: which ball batch
 
 
 def insert_event(
-    conn: sqlite3.Connection, ts: float, kind: str, note: str | None = None, mac: str | None = None
+    conn: sqlite3.Connection,
+    ts: float,
+    kind: str,
+    note: str | None = None,
+    mac: str | None = None,
+    batch_id: int | None = None,
 ) -> int:
     with conn:
         cur = conn.execute(
-            "INSERT INTO events (ts, mac, kind, note) VALUES (?, ?, ?, ?)", (ts, mac, kind, note)
+            "INSERT INTO events (ts, mac, kind, note, batch_id) VALUES (?, ?, ?, ?, ?)",
+            (ts, mac, kind, note, batch_id),
         )
         return cur.lastrowid
 
@@ -418,7 +486,7 @@ def list_events(
     conn: sqlite3.Connection, start: float | None = None, end: float | None = None
 ) -> list[Event]:
     rows = conn.execute(
-        """SELECT id, ts, mac, kind, note FROM events
+        """SELECT id, ts, mac, kind, note, batch_id FROM events
            WHERE (:start IS NULL OR ts >= :start) AND (:end IS NULL OR ts <= :end)
            ORDER BY ts, id""",
         {"start": start, "end": end},
@@ -465,3 +533,320 @@ def leak_test_spans(conn: sqlite3.Connection, mac: str, now: float) -> list[tupl
         end = next((t for t, k in rows[i + 1 :] if k in LEAK_TEST_END_KINDS and t > ts), now)
         spans.append((ts, end))
     return spans
+
+
+# --- balls and bounce tests (Phase 8, PLAN.md 6.2) ----------------------------------
+#
+# Lengths are in cm. Validation happens in the API; these functions only store.
+
+
+@dataclass(frozen=True)
+class BounceSetup:
+    id: int
+    name: str
+    drop_cm: float
+    is_itf: bool
+    note: str | None
+    used: bool  # referenced by a test, reference value or conversion: can't be deleted
+
+
+def insert_setup(
+    conn: sqlite3.Connection, name: str, drop_cm: float, is_itf: bool, note: str | None = None
+) -> int:
+    """Raises sqlite3.IntegrityError if the name is taken."""
+    with conn:
+        return conn.execute(
+            "INSERT INTO bounce_setups (name, drop_cm, is_itf, note) VALUES (?, ?, ?, ?)",
+            (name, drop_cm, int(is_itf), note),
+        ).lastrowid
+
+
+def list_setups(conn: sqlite3.Connection) -> list[BounceSetup]:
+    rows = conn.execute(
+        """SELECT s.id, s.name, s.drop_cm, s.is_itf, s.note,
+                  EXISTS (SELECT 1 FROM bounce_tests WHERE setup_id = s.id)
+                  OR EXISTS (SELECT 1 FROM reference_rebounds WHERE setup_id = s.id)
+                  OR EXISTS (SELECT 1 FROM setup_conversions WHERE setup_id = s.id) AS used
+           FROM bounce_setups s ORDER BY s.id"""
+    ).fetchall()
+    return [
+        BounceSetup(r["id"], r["name"], r["drop_cm"], bool(r["is_itf"]), r["note"], bool(r["used"]))
+        for r in rows
+    ]
+
+
+def delete_setup(conn: sqlite3.Connection, setup_id: int) -> bool:
+    """Delete an unused setup. Raises sqlite3.IntegrityError if anything uses it."""
+    with conn:
+        return conn.execute("DELETE FROM bounce_setups WHERE id = ?", (setup_id,)).rowcount > 0
+
+
+@dataclass(frozen=True)
+class Batch:
+    id: int
+    brand: str
+    model: str
+    opened_ts: float
+    n_balls: int
+    sample_size: int  # balls numbered 1..sample_size get tested
+    reference_override_cm: float | None
+    retired_ts: float | None
+    note: str | None
+
+
+BATCH_FIELDS = (
+    "brand",
+    "model",
+    "opened_ts",
+    "n_balls",
+    "sample_size",
+    "reference_override_cm",
+    "retired_ts",
+    "note",
+)
+
+
+def insert_batch(conn: sqlite3.Connection, **fields) -> int:
+    cols = [f for f in BATCH_FIELDS if f in fields]
+    with conn:
+        return conn.execute(
+            f"INSERT INTO ball_batches ({', '.join(cols)}) "
+            f"VALUES ({', '.join(':' + c for c in cols)})",
+            fields,
+        ).lastrowid
+
+
+def update_batch(conn: sqlite3.Connection, batch_id: int, **fields) -> bool:
+    cols = [f for f in BATCH_FIELDS if f in fields]
+    if not cols:
+        return get_batch(conn, batch_id) is not None
+    with conn:
+        return (
+            conn.execute(
+                f"UPDATE ball_batches SET {', '.join(f'{c} = :{c}' for c in cols)} WHERE id = :id",
+                {**fields, "id": batch_id},
+            ).rowcount
+            > 0
+        )
+
+
+def get_batch(conn: sqlite3.Connection, batch_id: int) -> Batch | None:
+    row = conn.execute(
+        f"SELECT id, {', '.join(BATCH_FIELDS)} FROM ball_batches WHERE id = ?", (batch_id,)
+    ).fetchone()
+    return None if row is None else Batch(**dict(row))
+
+
+def list_batches(conn: sqlite3.Connection) -> list[Batch]:
+    rows = conn.execute(
+        f"SELECT id, {', '.join(BATCH_FIELDS)} FROM ball_batches ORDER BY opened_ts DESC, id DESC"
+    ).fetchall()
+    return [Batch(**dict(r)) for r in rows]
+
+
+def delete_batch(conn: sqlite3.Connection, batch_id: int) -> bool:
+    """Delete a batch and its tests; events that named it keep their note."""
+    with conn:
+        return conn.execute("DELETE FROM ball_batches WHERE id = ?", (batch_id,)).rowcount > 0
+
+
+def highest_ball_tested(conn: sqlite3.Connection, batch_id: int) -> int | None:
+    return conn.execute(
+        """SELECT MAX(d.ball_no) FROM bounce_drops d
+           JOIN bounce_tests t ON t.id = d.test_id WHERE t.batch_id = ?""",
+        (batch_id,),
+    ).fetchone()[0]
+
+
+def batch_locations(conn: sqlite3.Connection) -> dict[int, tuple[str, str | None]]:
+    """Latest (kind, mac) of each batch's balls_added / balls_removed event."""
+    rows = conn.execute(
+        """SELECT batch_id, kind, mac FROM events
+           WHERE batch_id IS NOT NULL AND kind IN ('balls_added', 'balls_removed')
+           ORDER BY ts, id"""
+    ).fetchall()
+    return {r["batch_id"]: (r["kind"], r["mac"]) for r in rows}
+
+
+@dataclass(frozen=True)
+class BounceDrop:
+    ball_no: int
+    rebound_cm: float
+
+
+@dataclass(frozen=True)
+class BounceTest:
+    id: int
+    ts: float
+    batch_id: int
+    setup_id: int
+    context: str  # new | before | after | after_play | other
+    temp_c: float | None
+    note: str | None
+    drops: tuple[BounceDrop, ...]
+
+
+def _insert_drops(conn: sqlite3.Connection, test_id: int, drops: Iterable[BounceDrop]) -> None:
+    conn.executemany(
+        "INSERT INTO bounce_drops (test_id, ball_no, rebound_cm) VALUES (?, ?, ?)",
+        [(test_id, d.ball_no, d.rebound_cm) for d in drops],
+    )
+
+
+def insert_test(
+    conn: sqlite3.Connection,
+    ts: float,
+    batch_id: int,
+    setup_id: int,
+    context: str,
+    temp_c: float | None,
+    note: str | None,
+    drops: Iterable[BounceDrop],
+) -> int:
+    """Store a bounce test and its drops in one transaction."""
+    with conn:
+        test_id = conn.execute(
+            """INSERT INTO bounce_tests (ts, batch_id, setup_id, context, temp_c, note)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (ts, batch_id, setup_id, context, temp_c, note),
+        ).lastrowid
+        _insert_drops(conn, test_id, drops)
+        return test_id
+
+
+def replace_test(
+    conn: sqlite3.Connection,
+    test_id: int,
+    ts: float,
+    batch_id: int,
+    setup_id: int,
+    context: str,
+    temp_c: float | None,
+    note: str | None,
+    drops: Iterable[BounceDrop],
+) -> bool:
+    """Overwrite a test and all its drops; False if it doesn't exist."""
+    with conn:
+        updated = conn.execute(
+            """UPDATE bounce_tests SET ts = ?, batch_id = ?, setup_id = ?, context = ?,
+                   temp_c = ?, note = ?
+               WHERE id = ?""",
+            (ts, batch_id, setup_id, context, temp_c, note, test_id),
+        ).rowcount
+        if not updated:
+            return False
+        conn.execute("DELETE FROM bounce_drops WHERE test_id = ?", (test_id,))
+        _insert_drops(conn, test_id, drops)
+        return True
+
+
+def list_tests(conn: sqlite3.Connection, batch_id: int | None = None) -> list[BounceTest]:
+    """Tests oldest first, each with its drops in ball order."""
+    tests = conn.execute(
+        """SELECT id, ts, batch_id, setup_id, context, temp_c, note FROM bounce_tests
+           WHERE (:batch IS NULL OR batch_id = :batch) ORDER BY ts, id""",
+        {"batch": batch_id},
+    ).fetchall()
+    drops: dict[int, list[BounceDrop]] = {}
+    for r in conn.execute(
+        """SELECT d.test_id, d.ball_no, d.rebound_cm FROM bounce_drops d
+           JOIN bounce_tests t ON t.id = d.test_id
+           WHERE (:batch IS NULL OR t.batch_id = :batch) ORDER BY d.ball_no, d.id""",
+        {"batch": batch_id},
+    ):
+        drops.setdefault(r["test_id"], []).append(BounceDrop(r["ball_no"], r["rebound_cm"]))
+    return [BounceTest(**dict(t), drops=tuple(drops.get(t["id"], ()))) for t in tests]
+
+
+def delete_test(conn: sqlite3.Connection, test_id: int) -> bool:
+    with conn:
+        return conn.execute("DELETE FROM bounce_tests WHERE id = ?", (test_id,)).rowcount > 0
+
+
+@dataclass(frozen=True)
+class Reference:
+    """A user-entered new-ball rebound for a brand and model at one setup."""
+
+    id: int
+    brand: str
+    model: str
+    setup_id: int
+    rebound_cm: float
+
+
+def upsert_reference(
+    conn: sqlite3.Connection, brand: str, model: str, setup_id: int, rebound_cm: float
+) -> int:
+    """Set the value for (brand, model, setup), replacing any earlier one; returns its id."""
+    with conn:
+        conn.execute(
+            """INSERT INTO reference_rebounds (brand, model, setup_id, rebound_cm)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (brand, model, setup_id)
+               DO UPDATE SET rebound_cm = excluded.rebound_cm""",
+            (brand, model, setup_id, rebound_cm),
+        )
+        return conn.execute(
+            "SELECT id FROM reference_rebounds WHERE brand = ? AND model = ? AND setup_id = ?",
+            (brand, model, setup_id),
+        ).fetchone()[0]
+
+
+def list_references(conn: sqlite3.Connection) -> list[Reference]:
+    rows = conn.execute(
+        "SELECT id, brand, model, setup_id, rebound_cm FROM reference_rebounds "
+        "ORDER BY brand, model, setup_id"
+    ).fetchall()
+    return [Reference(**dict(r)) for r in rows]
+
+
+def delete_reference(conn: sqlite3.Connection, reference_id: int) -> bool:
+    with conn:
+        return (
+            conn.execute("DELETE FROM reference_rebounds WHERE id = ?", (reference_id,)).rowcount
+            > 0
+        )
+
+
+@dataclass(frozen=True)
+class Conversion:
+    """One ball's rebound at a user setup and at ITF conditions, measured the same day."""
+
+    id: int
+    ts: float
+    setup_id: int
+    rebound_cm: float
+    itf_rebound_cm: float
+    note: str | None
+
+
+def insert_conversion(
+    conn: sqlite3.Connection,
+    ts: float,
+    setup_id: int,
+    rebound_cm: float,
+    itf_rebound_cm: float,
+    note: str | None = None,
+) -> int:
+    with conn:
+        return conn.execute(
+            """INSERT INTO setup_conversions (ts, setup_id, rebound_cm, itf_rebound_cm, note)
+               VALUES (?, ?, ?, ?, ?)""",
+            (ts, setup_id, rebound_cm, itf_rebound_cm, note),
+        ).lastrowid
+
+
+def list_conversions(conn: sqlite3.Connection) -> list[Conversion]:
+    rows = conn.execute(
+        "SELECT id, ts, setup_id, rebound_cm, itf_rebound_cm, note FROM setup_conversions "
+        "ORDER BY setup_id, ts, id"
+    ).fetchall()
+    return [Conversion(**dict(r)) for r in rows]
+
+
+def delete_conversion(conn: sqlite3.Connection, conversion_id: int) -> bool:
+    with conn:
+        return (
+            conn.execute("DELETE FROM setup_conversions WHERE id = ?", (conversion_id,)).rowcount
+            > 0
+        )

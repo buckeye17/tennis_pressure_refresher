@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,28 @@ def test_trends_section():
     cfg = parse_config({"trends": {"window_hours": 12, "leak_hint_after_hours": 72}})
     assert (cfg.trends.window_hours, cfg.trends.leak_hint_after_hours) == (12.0, 72.0)
     assert cfg.trends.plateau_threshold_psi_per_day == 0.3  # default kept
+
+
+def test_bounce_section():
+    cfg = parse_config({"bounce": {"itf_rebound_in": [48, 53], "display_units": "cm"}})
+    assert cfg.bounce.itf_rebound_in == [48.0, 53.0]
+    assert cfg.bounce.display_units == "cm"
+    assert cfg.bounce.like_new_tolerance_pct == 5.0
+
+
+@pytest.mark.parametrize(
+    "bounce, message",
+    [
+        ({"like_new_tolerance_pct": 0}, "between 0 and 50"),
+        ({"itf_rebound_in": [58, 53]}, "[low, high]"),
+        ({"itf_rebound_in": [53]}, "[low, high]"),
+        ({"itf_rebound_in": ["53", "58"]}, "wrong type"),
+        ({"display_units": "ft"}, "display_units"),
+    ],
+)
+def test_bounce_validation(bounce, message):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        parse_config({"bounce": bounce})
 
 
 def test_ints_accepted_for_floats():

@@ -283,7 +283,7 @@ def create_event():
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         raise ApiError("request body must be a JSON object")
-    unknown = set(body) - {"ts", "mac", "kind", "note"}
+    unknown = set(body) - {"ts", "mac", "kind", "note", "batch_id"}
     if unknown:
         raise ApiError(f"unknown field(s): {', '.join(sorted(unknown))}")
 
@@ -299,9 +299,16 @@ def create_event():
     if note is not None and (not isinstance(note, str) or len(note) > NOTE_MAX):
         raise ApiError(f"note must be text of at most {NOTE_MAX} characters")
     mac = _mac(body.get("mac"))
+    batch_id = body.get("batch_id")
+    if batch_id is not None:
+        if isinstance(batch_id, bool) or not isinstance(batch_id, int):
+            raise ApiError("batch_id must be a whole number")
+        if db.get_batch(get_db(), batch_id) is None:
+            raise ApiError(f"batch {batch_id} not found")
 
-    event_id = db.insert_event(get_db(), float(ts), kind, note or None, mac)
-    return jsonify(db.Event(event_id, float(ts), mac, kind, note or None).__dict__), 201
+    event_id = db.insert_event(get_db(), float(ts), kind, note or None, mac, batch_id)
+    event = db.Event(event_id, float(ts), mac, kind, note or None, batch_id)
+    return jsonify(event.__dict__), 201
 
 
 @api.delete("/api/events/<int:event_id>")

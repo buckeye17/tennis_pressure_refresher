@@ -276,7 +276,7 @@ Findings:
 
 Both bands are two-sided. Over-pressurized balls bounce too high, and a long recharge can overshoot, so the app warns before the upper limit as well as reporting when balls are back in the band. "ITF rebound" covers only the rebound criterion: ITF also sets limits on deformation, mass and size, which the app does not predict.
 
-**Batches and bounce tests.** A batch is a set of balls of one brand and model opened together. The user numbers a sample: every ball if the batch has about 12 or fewer, otherwise 10–12 balls picked at random **once**, when the batch is new, and tested every time after. Repeating the same balls cancels ball-to-ball differences in before/after comparisons, and ≥10 balls give a usable spread. A test is 3 drops per sampled ball, median taken, read from slow-motion video against a tape measure (reading by eye is good to only about ±1–2 in). Rebound is measured to the bottom of the ball, released with its bottom at the drop height. Test context: `new` (straight from the can), `before` / `after` a canister session (within ~30 min of opening), `after_play`, or `other`. Room temperature is recorded with each test (the canister sensor's reading if tested in the same room).
+**Batches and bounce tests.** A batch is a set of balls of one brand and model opened together. The user numbers a sample 1 to N: every ball if the batch has 12 or fewer (the default), otherwise 10–12 balls picked at random **once**, when the batch is new, and tested every time after (default 10). Only the sampled balls need numbering. Repeating the same balls cancels ball-to-ball differences in before/after comparisons, and ≥10 balls give a usable spread. A test is 3 drops per sampled ball, median taken, read from slow-motion video against a tape measure (reading by eye is good to only about ±1–2 in). Rebound is measured to the bottom of the ball, released with its bottom at the drop height. Test context: `new` (straight from the can), `before` / `after` a canister session (within ~30 min of opening), `after_play`, or `other`. Room temperature is recorded with each test (the canister sensor's reading if tested in the same room).
 
 **New-ball reference** (for like-new), first available of:
 1. this batch's own `new` tests;
@@ -358,59 +358,69 @@ CREATE TABLE events (
 );
 ```
 
-**Planned (Phase 8, §6.2).** Lengths are stored in cm, as the canonical unit; the UI shows inches or cm.
+**Ball batches and bounce tests** (migration 3, Phase 8b, §6.2). Lengths are stored in cm, the canonical unit; the UI shows inches or cm. Brand, model and setup names compare case-insensitively.
 
 ```sql
-CREATE TABLE ball_batches (
+CREATE TABLE bounce_setups (            -- one per way of testing
     id         INTEGER PRIMARY KEY,
-    brand      TEXT NOT NULL,
-    model      TEXT NOT NULL,
-    opened_ts  REAL NOT NULL,
-    n_balls    INTEGER NOT NULL,
-    sample     TEXT NOT NULL,           -- JSON list of the numbered balls that get tested
-    reference_override_cm REAL,          -- manual new-ball rebound for this batch, if any
-    retired_ts REAL,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,   -- e.g. "Garage slab, 6 ft"
+    drop_cm    REAL NOT NULL,
+    is_itf     INTEGER NOT NULL DEFAULT 0,            -- 1: 254 cm onto concrete, ITF method
     note       TEXT
 );
 
-CREATE TABLE bounce_setups (            -- one per way of testing; never edited once used
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL UNIQUE,     -- e.g. "garage slab, 100 in"
-    drop_cm    REAL NOT NULL,
-    is_itf     INTEGER NOT NULL          -- 1: 254 cm onto concrete, ITF method
+CREATE TABLE ball_batches (
+    id          INTEGER PRIMARY KEY,
+    brand       TEXT NOT NULL COLLATE NOCASE,
+    model       TEXT NOT NULL COLLATE NOCASE,
+    opened_ts   REAL NOT NULL,
+    n_balls     INTEGER NOT NULL,
+    sample_size INTEGER NOT NULL,       -- balls numbered 1..sample_size get tested
+    reference_override_cm REAL,         -- manual new-ball rebound for this batch, if any
+    retired_ts  REAL,
+    note        TEXT
+);
+
+CREATE TABLE bounce_tests (             -- one session of drops; edited and deleted as a unit
+    id        INTEGER PRIMARY KEY,
+    ts        REAL NOT NULL,
+    batch_id  INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+    setup_id  INTEGER NOT NULL REFERENCES bounce_setups(id),
+    context   TEXT NOT NULL,            -- new | before | after | after_play | other
+    temp_c    REAL,
+    note      TEXT
 );
 
 CREATE TABLE bounce_drops (
     id         INTEGER PRIMARY KEY,
-    ts         REAL NOT NULL,
-    batch_id   INTEGER NOT NULL REFERENCES ball_batches(id),
+    test_id    INTEGER NOT NULL REFERENCES bounce_tests(id) ON DELETE CASCADE,
     ball_no    INTEGER NOT NULL,
-    setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
-    rebound_cm REAL NOT NULL,
-    temp_c     REAL,
-    context    TEXT NOT NULL,            -- new | before | after | after_play | other
-    note       TEXT
+    rebound_cm REAL NOT NULL
 );
 
 CREATE TABLE reference_rebounds (       -- user-entered new-ball rebound per brand/model/setup
-    brand      TEXT NOT NULL,
-    model      TEXT NOT NULL,
+    id         INTEGER PRIMARY KEY,
+    brand      TEXT NOT NULL COLLATE NOCASE,
+    model      TEXT NOT NULL COLLATE NOCASE,
     setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
     rebound_cm REAL NOT NULL,
-    PRIMARY KEY (brand, model, setup_id)
+    UNIQUE (brand, model, setup_id)
 );
 
-CREATE TABLE setup_conversions (        -- ITF conversion session: same ball, both setups
-    id         INTEGER PRIMARY KEY,
-    ts         REAL NOT NULL,
-    setup_id   INTEGER NOT NULL REFERENCES bounce_setups(id),
-    rebound_cm REAL NOT NULL,            -- at the user's setup
-    itf_rebound_cm REAL NOT NULL
+CREATE TABLE setup_conversions (        -- ITF conversion session: one ball, both setups
+    id             INTEGER PRIMARY KEY,
+    ts             REAL NOT NULL,
+    setup_id       INTEGER NOT NULL REFERENCES bounce_setups(id),
+    rebound_cm     REAL NOT NULL,       -- at the user's setup
+    itf_rebound_cm REAL NOT NULL,
+    note           TEXT
 );
 
-ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id);
+ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id) ON DELETE SET NULL;
 -- balls_added / balls_removed name the batch, so the app knows which batch sat in which canister when
 ```
+
+A setup can't be deleted once a test, reference value or conversion uses it. Deleting a batch deletes its tests; events that named it keep their note.
 
 **Write policy (collector):**
 - Store a raw advert when its payload differs from the previous one for that MAC, **or** at most once per `raw_heartbeat_minutes` (default 10) if unchanged.
@@ -689,7 +699,7 @@ Done (8a, leak calibration): `leak.py` (session fit, calibration across sessions
 
 Next, in order. Data collection comes first because it takes the longest:
 
-- **8b — Batches and bounce tests.** Tables in §7 (migration), and dashboard forms to:
+- **8b — Batches and bounce tests** *(done)*. Tables in §7 (migration 3), and dashboard forms to:
   - create a batch (brand, model, size, numbered sample);
   - define a test setup;
   - enter a bounce test (3 drops per sampled ball, with the canister sensor's temperature pre-filled);
@@ -698,6 +708,19 @@ Next, in order. Data collection comes first because it takes the longest:
   `balls_added` / `balls_removed` take a batch. Bounce data goes in the CSV export.
 
   Acceptance: a test can be entered on a phone in under a minute per ball, and edited or deleted.
+
+  As built: `bounce.py` (per-ball medians, test summary), `web/bounce_api.py`:
+  - `GET /api/bounce` returns everything at once: setups, batches with their tests and summaries, reference values, conversions.
+  - CRUD under `/api/bounce/{setups,batches,tests,references,conversions}`, and `GET /api/bounce.csv` with one row per drop.
+  - `POST /api/events` takes `batch_id`.
+  - Rebounds above the setup's drop height are rejected as probably the wrong units, by both server and browser.
+
+  Dashboard: a **Balls** panel with batch cards (location from the latest batch event, latest test, tests table), and dialogs for batch and test entry.
+  - The test grid has one row per numbered ball and three drop boxes. Enter moves to the next box. Medians and the batch average update as you type.
+  - Defaults: the stage is guessed (new / before / after); room temperature is pre-filled from the batch's canister sensor.
+  - Unsaved drops ask before closing. Units switch between in and cm.
+
+  Checked on desktop and at 375 px phone width.
 - **8c — Like-new from tests.** Resolve the new-ball reference (own → same brand/model → manual, with the source shown). Show each test as a share of new and the share of sampled balls in the like-new band. A batch chart shows tests as points with the band.
 
   Acceptance: unit tests for reference resolution and band shares.

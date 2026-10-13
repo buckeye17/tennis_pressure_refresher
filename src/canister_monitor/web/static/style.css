@@ -238,6 +238,109 @@ a { color: var(--accent); }
 .events .del:hover { color: var(--danger); }
 .events .none { display: block; color: var(--muted); border: 0; }
 
+/* --- balls and bounce tests ----------------------------------------------- */
+
+.head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hint { color: var(--muted); font-size: 0.85rem; margin: 6px 0; }
+.hint[hidden], .toggle[hidden], form[hidden] { display: none; }
+.muted { color: var(--muted); }
+.small { font-size: 0.82rem; }
+
+.balls button, dialog button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 5px 12px;
+  min-height: 36px;
+  cursor: pointer;
+}
+.balls button.primary, dialog button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.balls button.danger:hover { color: var(--danger); border-color: var(--danger); }
+.balls button:disabled { opacity: 0.5; cursor: default; }
+.balls .seg button { border: 0; border-radius: 0; min-height: 32px; }
+.balls .seg button + button { border-left: 1px solid var(--border); }
+.balls button.link { border: 0; background: none; color: var(--accent); padding: 2px 6px; min-height: 0; }
+.balls button.del { border: 0; background: none; color: var(--muted); padding: 2px 6px; min-height: 0; }
+.balls button.del:hover { color: var(--danger); }
+
+.batches { display: grid; gap: 10px; margin: 6px 0 10px; }
+.batches .none { color: var(--muted); margin: 6px 0; }
+.batch { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.batch.retired { opacity: 0.75; }
+.batch-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.batch .sub { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.batch .latest { font-size: 0.9rem; }
+.batch .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.tag { font-size: 0.75rem; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+.tests-wrap { max-height: 320px; margin-top: 6px; }
+.row-actions { text-align: right; }
+
+details.sub { border-top: 1px solid var(--border); padding: 8px 0; }
+details.sub > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.mini { list-style: none; margin: 4px 0 8px; padding: 0; }
+.mini li { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--grid); overflow-wrap: anywhere; }
+.mini li.none { color: var(--muted); border: 0; }
+
+.inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+.inline-form input:not([type="checkbox"]), .inline-form select, .dialog-form input, .dialog-form select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 6px 8px;
+  min-height: 36px;
+  min-width: 0;
+}
+.inline-form > input:not([type="checkbox"]) { flex: 1 1 140px; }
+.with-unit { display: inline-flex; align-items: center; gap: 4px; }
+.with-unit input { width: 8.5em; }
+.with-unit span { color: var(--muted); font-size: 0.85rem; }
+.toggle.small { font-size: 0.85rem; color: var(--muted); }
+#balls-error { margin: 0; }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: 16px;
+  width: min(640px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+.dialog-form { display: grid; gap: 10px; }
+.dialog-form .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px 12px; }
+.dialog-form label { display: grid; gap: 2px; font-size: 0.85rem; color: var(--muted); }
+.dialog-form label input, .dialog-form label select, .dialog-form label .with-unit { color: var(--text); font-size: 1rem; }
+.dialog-form label .with-unit input { width: 100%; }
+.dialog-form .wide { grid-column: 1 / -1; }
+.dialog-form .hint, .dialog-form .form-error { margin: 0; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.ball-grid { --drops: 3; display: grid; gap: 6px; }
+.ball-grid .grid-head, .ball-grid .ball-row {
+  display: grid;
+  grid-template-columns: 2.6em repeat(var(--drops), minmax(0, 1fr)) 4em;
+  gap: 6px;
+  align-items: center;
+}
+.ball-grid .grid-head { color: var(--muted); font-size: 0.78rem; }
+.ball-grid .grid-head span:last-child, .ball-grid .median { text-align: right; }
+.ball-grid label { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ball-grid input {
+  width: 100%;
+  min-height: 40px;
+  font-size: 1.05rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 4px 8px;
+}
+.ball-grid input[aria-invalid="true"] { border-color: var(--danger); outline-color: var(--danger); }
+.ball-grid .median { color: var(--muted); font-variant-numeric: tabular-nums; }
+.test-summary { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 @media (max-width: 520px) {
   .top { padding: 10px 12px; }
   main { padding: 12px; gap: 12px; }

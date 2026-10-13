@@ -29,6 +29,14 @@ plateau_threshold_psi_per_day = 0.3   # |slope| below this counts as flat
 plateau_hours = 12                    # flat for this long = "levelled off"
 leak_hint_after_hours = 96            # still dropping this long after a fill = leak hint
 
+[bounce]
+# Ball bounce predictions (PLAN.md 6.2). Like-new: within this percentage of the
+# new-ball mean rebound, tested your way. ITF rebound from 100 in onto concrete
+# at 20 degC; use [48.0, 53.0] for high-altitude balls.
+like_new_tolerance_pct = 5.0
+itf_rebound_in = [53.0, 58.0]
+display_units = "in"             # in | cm (the dashboard can switch too)
+
 # Map sensor MACs to canister names. Unlisted sensors that match a decoder
 # still get recorded and appear in the UI as "Unassigned".
 [[sensors]]

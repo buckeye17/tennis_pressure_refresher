@@ -4,13 +4,14 @@ import re
 import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, get_origin
+from typing import Any, get_args, get_origin
 
 from canister_monitor.decoders import REGISTRY
 
 MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 UNITS = ("psi", "kPa", "bar")
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+LENGTH_UNITS = ("in", "cm")
 
 
 class ConfigError(ValueError):
@@ -55,6 +56,15 @@ class TrendsConfig:
 
 
 @dataclass(frozen=True)
+class BounceConfig:
+    """Bounce predictions (PLAN.md section 6.2)."""
+
+    like_new_tolerance_pct: float = 5.0  # like-new band: new-ball mean +- this percentage
+    itf_rebound_in: list[float] = field(default_factory=lambda: [53.0, 58.0])
+    display_units: str = "in"
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     mac: str
     canister: str
@@ -66,6 +76,7 @@ class Config:
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     web: WebConfig = field(default_factory=WebConfig)
     trends: TrendsConfig = field(default_factory=TrendsConfig)
+    bounce: BounceConfig = field(default_factory=BounceConfig)
     sensors: list[SensorConfig] = field(default_factory=list)
 
     def canister_for(self, mac: str) -> str | None:
@@ -96,7 +107,13 @@ def _section(cls: type, raw: Any, where: str) -> dict[str, Any]:
             ok = isinstance(value, str)
             value = Path(value) if ok else value
         elif get_origin(expected) is list:
-            ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
+            if get_args(expected) == (float,):
+                ok = isinstance(value, list) and all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+                )
+                value = [float(v) for v in value] if ok else value
+            else:
+                ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
         else:
             ok = isinstance(value, str)
         if not ok:
@@ -117,7 +134,7 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
     A relative ``db_path`` is resolved against ``base_dir`` (the config file's
     directory) when given.
     """
-    unknown = sorted(set(data) - {"site", "collector", "web", "trends", "sensors"})
+    unknown = sorted(set(data) - {"site", "collector", "web", "trends", "bounce", "sensors"})
     if unknown:
         raise ConfigError(f"unknown section(s): {', '.join(unknown)}")
 
@@ -160,6 +177,20 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
         leak_hint_after_hours=trends.leak_hint_after_hours,
     )
 
+    bounce = BounceConfig(**_section(BounceConfig, data.get("bounce", {}), "bounce"))
+    if not 0 < bounce.like_new_tolerance_pct < 50:
+        raise ConfigError(
+            f"[bounce] like_new_tolerance_pct must be between 0 and 50, "
+            f"got {bounce.like_new_tolerance_pct}"
+        )
+    itf = bounce.itf_rebound_in
+    if len(itf) != 2 or not 0 < itf[0] < itf[1]:
+        raise ConfigError(f"[bounce] itf_rebound_in must be [low, high] inches, got {itf}")
+    if bounce.display_units not in LENGTH_UNITS:
+        raise ConfigError(
+            f"[bounce] display_units must be one of {LENGTH_UNITS}, got {bounce.display_units!r}"
+        )
+
     raw_sensors = data.get("sensors", [])
     if not isinstance(raw_sensors, list):
         raise ConfigError("sensors must be an array of tables: [[sensors]]")
@@ -177,7 +208,9 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
             raise ConfigError(f"[{where}] duplicate mac {mac}")
         sensors.append(SensorConfig(mac=mac, canister=values["canister"]))
 
-    return Config(site=site, collector=collector, web=web, trends=trends, sensors=sensors)
+    return Config(
+        site=site, collector=collector, web=web, trends=trends, bounce=bounce, sensors=sensors
+    )
 
 
 def load_config(path: str | Path) -> Config:

@@ -227,6 +227,32 @@ def test_events_crud(conn):
     assert [e.id for e in db.list_events(conn)] == [b]
 
 
+def test_latest_fill_counts_leak_tests(conn):
+    db.insert_event(conn, 100.0, "fill", mac=MAC1)
+    db.insert_event(conn, 200.0, "leak_test", mac=MAC1)
+    db.insert_event(conn, 300.0, "leak_test", mac=MAC2)
+    db.insert_event(conn, 400.0, "note", mac=MAC1)
+    assert db.latest_fill_ts(conn, MAC1, now=1000.0) == 200.0
+    assert db.latest_fill_ts(conn, MAC1, now=150.0) == 100.0
+
+
+def test_leak_test_spans(conn):
+    db.insert_event(conn, 100.0, "leak_test", mac=MAC1)
+    db.insert_event(conn, 150.0, "note", mac=MAC1)  # notes don't end a test
+    db.insert_event(conn, 160.0, "fill", mac=MAC2)  # other canisters don't either
+    db.insert_event(conn, 200.0, "fill", mac=MAC1)
+    db.insert_event(conn, 300.0, "leak_test", mac=MAC1)
+    db.insert_event(conn, 400.0, "vent")  # all canisters
+    db.insert_event(conn, 500.0, "leak_test")  # all canisters, still running
+    assert db.leak_test_spans(conn, MAC1, now=1000.0) == [
+        (100.0, 200.0),
+        (300.0, 400.0),
+        (500.0, 1000.0),
+    ]
+    assert db.leak_test_spans(conn, MAC2, now=1000.0) == [(500.0, 1000.0)]
+    assert db.leak_test_spans(conn, MAC1, now=350.0) == [(100.0, 200.0), (300.0, 350.0)]
+
+
 # --- concurrency (WAL) ------------------------------------------------------
 
 

@@ -237,6 +237,32 @@ Why not the original 6 h / 0.2 psi/day: with the B-Qtech sensors' 0.46 psi steps
 
 Statuses: `insufficient_data` (fewer than 6 readings, or they span less than half the window), `falling`, `rising`, `levelling_off` (flat for less than `plateau_hours`), `levelled_off`, `leak_suspected`.
 
+### 6.1 Leak calibration (Phase 8, `leak.py`)
+
+**Goal:** subtract each canister's leak from a ball cycle, so the rest of the pressure drop measures the air that went into the balls. The canister is used in two modes: **maintain** (filled to ~20 psi, to hold the balls at pressure) and **recharge** (filled to ~50 psi, to add pressure; the balls do not reach canister pressure).
+
+**Leak tests.** The canister is filled with no balls and left alone. The user logs a `leak_test` event at the fill. The test runs until the next `fill`, `leak_test`, `vent` or `balls_added` event for that canister (or all canisters). Recommended protocol: one long test (~7 days at ~50 psi) for the leak model, plus several short ones (3–5 days each, at both 20 and 50 psi), each with the sensor and lid freshly re-seated as in a real cycle, to measure how much seals vary.
+
+**Per session** (`fit_session`): hourly means of compensated gauge pressure, skipping the first 2 h (the gas cools after pumping), fitted with a line plus a daily sine and cosine (temperature compensation is imperfect because the sensor follows the air faster than the gas does). Rate = −slope / mean gauge, as a fraction per day. Its standard error is widened for autocorrelated residuals and for **weather**. The sensor reads gauge pressure, so atmospheric changes appear in the readings. Typical drift (0.8 kPa sd, 36 h correlation) looks like a slope of about 0.05 psi/day over three days. Nothing within one session can separate that from a leak, so its expected effect on the slope is added to the error. Without it, simulated errors were 3–4× too small.
+
+**Across sessions** (`fit_calibration`): ln(rate) = μ + β·ln(P / 30 psi) + u, with u ~ N(0, τ²) per session. β is how the leak scales with pressure: 0 when flow is proportional to gauge pressure (permeation), about −0.3 for an orifice. It is fitted only when the tests span ≥1.5× in pressure, with a weak N(0, 1) prior. Each session's measurement error is integrated out numerically, so negative or noisy rates are fine. τ is averaged over a grid with a half-Cauchy(0.5) prior instead of taken at its best fit: with six noisy tests the best fit was τ ≈ 0 most of the time, and predictions covered 45% of new sessions instead of 68%. A uniform prior gave 85–100% (too wide). Half-Cauchy came out near 68% for true τ of 0.4–0.8 and still erred wide (85–98%) for tight seals (τ 0.1), which is the safe direction. Prediction for a new session: median rate and ±1 sd range, `Calibration.rate_range`.
+
+**Simulation** (`tools/leak_sim.py`, `simulate.leak_test_readings`). Each test goes through the real encoder and decoder (0.46 psi steps, whole °C), with OU weather (0.8 kPa, 36 h), OU daily-mean temperature (1.5 °C, 48 h), ±5 °C daily cycle and a 1 h lag of gas temperature. Truth is a rate of 0.005/day at 30 psi (0.15 psi/day), β −0.3. Results, 60 trials each:
+
+| Protocol (psi:hours) | Conditions | True τ | Fitted τ (median) | β (median ± sd) | New session inside ±1 sd (expect 68%) | Leak prediction error, psi/day rms (20 / 50 psi) |
+|---|---|---|---|---|---|---|
+| 50:168, 3× 20:72, 2× 50:72 | weather | 0.4 | 0.30 | −0.12 ± 0.41 | 80% / 67% | 0.068 / 0.107 |
+| same | weather | 0.1 | 0.20 | −0.16 ± 0.33 | 88% / 98% | 0.034 / 0.031 |
+| same | barometer | 0.4 | 0.42 | −0.31 ± 0.33 | 75% / 80% | 0.056 / 0.090 |
+| 50:168, 3× 20:120, 2× 50:72 | weather | 0.4 | 0.34 | −0.26 ± 0.35 | 80% / 72% | 0.056 / 0.116 |
+| 50:168, 5× 24 h | weather | 0.4 | 0.37 | −0.00 ± 0.40 | 82% / 85% | 0.090 / 0.137 (median rate 30% low) |
+
+Findings:
+- **24 h tests are too short.** They biased the rate low by 30% and doubled its uncertainty. Use 3–5 days.
+- **Weather limits the 20 psi tests.** A 72 h test at 20 psi measures its rate to only about ±55% (±0.06 psi/day). β is barely identifiable without a barometer, which recovers it without bias.
+- **When seals vary (τ ≈ 0.4), that variation is the floor.** Predicting a new session's leak is uncertain by ±0.06–0.11 psi/day however well μ is known. Over a 7-day recharge cycle that is about 0.4–0.8 psi of canister pressure. With repeatable seals (τ ≈ 0.1) it is ±0.03 psi/day.
+- The leak magnitude here is a guess. Real errors scale with the real leak.
+
 ---
 
 ## 7. Data model (SQLite)
@@ -410,6 +436,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 | `scan.py` | Print every advert with manufacturer data: MAC, name, RSSI, company ID, payload hex, service UUIDs. Used in Phase 0 |
 | `capture.py` | Like scan, but filtered to given MACs and writes JSON-lines fixtures to `tests/fixtures/captured/` with an optional `--label "30 psi gauge"` |
 | `redecode.py` | Re-run current decoders over `raw_adverts` and rebuild `readings` (with a `--dry-run` diff summary) |
+| `leak_sim.py` | Monte Carlo check of leak calibration (§6.1): simulate a leak-test protocol many times and report how well the fit recovers the truth |
 
 ---
 
@@ -429,6 +456,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │   ├── write_policy.py           # raw/reading dedupe + heartbeat rules (§7)
 │   ├── compensation.py
 │   ├── trends.py                 # Phase 7
+│   ├── leak.py                   # Phase 8
 │   ├── collector.py
 │   ├── simulate.py
 │   ├── decoders/
@@ -443,7 +471,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │       ├── api.py
 │       ├── templates/index.html
 │       └── static/{app.js,style.css,vendor/uplot/...}
-├── tools/{scan.py,capture.py,redecode.py}
+├── tools/{scan.py,capture.py,redecode.py,leak_sim.py}
 ├── tests/
 │   ├── fixtures/{br_27a5.json,tpms_0100.json,captured/}
 │   ├── test_decoders.py
@@ -544,6 +572,17 @@ Acceptance: simulator's leaking sensor is flagged; plateaued sensors are labeled
 
 As built: `trends.py` is pure (no DB/web). `/api/canisters` returns `trend: {status, slope_kpa_per_day, levelled_since, session_start, session_source, window_s}`. Cards show e.g. "▼ 0.83 psi/day · still dropping", "✓ Levelled off", or (red) "still dropping 4.5 days after fill — check for a leak", plus "Filled N days ago". The chart's **Since fill** range starts at the most recent fill note. Verified on 20 simulator seeds × 7 days: 60/60 healthy canisters levelled off, 20/20 leaks flagged.
 
+### Phase 8 — Leak calibration and ball pressure *(in progress)*
+
+Goal per §6.1: learn each canister's leak from empty-canister tests, then infer how much pressure the balls gained in each cycle.
+
+Done: `leak.py` (session fit, calibration across sessions), `leak_test` event kind (dashboard menu; counts as a fill for trends), `db.leak_test_spans`, `simulate.leak_test_readings`, `tools/leak_sim.py`, tests.
+
+Next:
+1. `/api/leak-calibration?mac=`: sessions with their rates and errors, plus μ, β, τ (cache it; a fit takes ~0.5 s on a PC, maybe 5 s on a Pi 3), and a calibration panel showing each session's rate with error bars.
+2. Per-canister config: internal volume, ball count, ball inner/outer volume (defaults ~117/157 cm³).
+3. Ball-cycle inference. Free volume V_free = V − N·V_outer. Leak during a cycle uses `rate_range` at the cycle's pressure, scaled by V/V_free. Ball gain ΔP_ball = (drop not explained by leak) × V_free / (N·V_inner). Mode (maintain/recharge) is inferred from the fill pressure. In maintain mode, a levelled-off canister also gives the balls' absolute pressure. In recharge mode, the leak range is the only constraint (the balls never catch up), so its uncertainty carries straight through.
+
 ---
 
 ## 12. Possible future work (not in scope now)
@@ -551,7 +590,7 @@ As built: `trends.py` is pure (no DB/web). `/api/canisters` returns `trend: {sta
 - MQTT publish / Home Assistant discovery.
 - Alerts (e.g. ntfy or email) when pressure drops below a threshold or a sensor goes stale.
 - ESP32 BLE "repeater" if the canisters are out of the Pi's radio range.
-- Ambient barometric sensor (e.g. BME280 on the Pi's I²C) to replace the fixed `atmospheric_kpa`.
+- Ambient barometric sensor (e.g. BME280 on the Pi's I²C) to replace the fixed `atmospheric_kpa`. Also removes the weather term that limits leak tests (§6.1); then set the leak fit's `weather_sd_kpa` to 0.
 
 ---
 

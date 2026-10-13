@@ -432,9 +432,36 @@ def delete_event(conn: sqlite3.Connection, event_id: int) -> bool:
         return conn.execute("DELETE FROM events WHERE id = ?", (event_id,)).rowcount > 0
 
 
+FILL_KINDS = ("fill", "leak_test")  # a leak test starts with a fill too
+# A leak test ends at the next of these (for its canister or all), or now.
+LEAK_TEST_END_KINDS = ("fill", "leak_test", "vent", "balls_added")
+
+
 def latest_fill_ts(conn: sqlite3.Connection, mac: str, now: float) -> float | None:
-    """Time of the most recent "fill" event for this sensor (or for all canisters)."""
+    """Time of the most recent fill (or leak test) for this sensor (or for all canisters)."""
     return conn.execute(
-        "SELECT MAX(ts) FROM events WHERE kind = 'fill' AND (mac = ? OR mac IS NULL) AND ts <= ?",
-        (mac, now),
+        f"""SELECT MAX(ts) FROM events
+            WHERE kind IN ({",".join("?" * len(FILL_KINDS))})
+              AND (mac = ? OR mac IS NULL) AND ts <= ?""",
+        (*FILL_KINDS, mac, now),
     ).fetchone()[0]
+
+
+def leak_test_spans(conn: sqlite3.Connection, mac: str, now: float) -> list[tuple[float, float]]:
+    """(start, end) of each leak test of this sensor's canister, oldest first.
+
+    A test runs from its "leak_test" event to the next fill, leak test, vent or
+    balls_added event for the same canister or all canisters, or to ``now``.
+    """
+    rows = conn.execute(
+        """SELECT ts, kind FROM events
+           WHERE (mac = ? OR mac IS NULL) AND ts <= ? ORDER BY ts, id""",
+        (mac, now),
+    ).fetchall()
+    spans = []
+    for i, (ts, kind) in enumerate(rows):
+        if kind != "leak_test":
+            continue
+        end = next((t for t, k in rows[i + 1 :] if k in LEAK_TEST_END_KINDS and t > ts), now)
+        spans.append((ts, end))
+    return spans

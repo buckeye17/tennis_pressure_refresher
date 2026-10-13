@@ -26,6 +26,7 @@ from canister_monitor.decoders import fbb0_ac00 as fmt
 
 REFERENCE_TEMP_C = 20.0
 DAY_S = 86_400.0
+HOUR_S = 3_600.0
 STEP_S = 9.0  # sensors repeat about every 9 s during a burst
 BURST_PACKETS = 3
 HEARTBEAT_RANGE_S = (270.0, 390.0)
@@ -193,6 +194,110 @@ class Simulator:
 
     def scanner_factory(self, submit: Callable[[Advert], None]) -> "SimScanner":
         return SimScanner(self, submit)
+
+
+# --- leak tests (offline, for checking leak.py) ----------------------------------
+
+
+@dataclass(frozen=True)
+class LeakTest:
+    """An empty canister that only leaks.
+
+    The leak rate (fraction of gauge pressure per day) is ``rate_per_day`` at
+    ``ref_gauge_psi`` and scales as (gauge / ref) ** beta, so gauge pressure
+    obeys dP/dt = -k * P ** (1 + beta).
+    """
+
+    fill_psi: float
+    rate_per_day: float
+    beta: float = 0.0
+    ref_gauge_psi: float = 30.0
+
+    def ref_gauge_psi_at(self, elapsed_s: float) -> float:
+        """Gauge pressure at the reference temperature, ``elapsed_s`` after the fill."""
+        days = elapsed_s / DAY_S
+        k = self.rate_per_day / self.ref_gauge_psi**self.beta
+        if self.beta == 0:
+            return self.fill_psi * math.exp(-k * days)
+        base = self.fill_psi ** (-self.beta) + self.beta * k * days
+        return base ** (-1 / self.beta) if base > 0 else 0.0
+
+
+@dataclass(frozen=True)
+class Room:
+    """What makes real readings messier than the leak alone.
+
+    Weather: atmospheric pressure wanders (the sensor reads gauge pressure, but
+    the database adds a fixed atmospheric pressure to it), as a random process
+    with standard deviation ``weather_sd_kpa`` and correlation time
+    ``weather_tau_h``. The day's mean temperature wanders the same way. The gas
+    follows the air temperature ``gas_lag_h`` behind the sensor.
+    """
+
+    weather_sd_kpa: float = 0.8
+    weather_tau_h: float = 36.0
+    temp_sd_c: float = 1.5
+    temp_tau_h: float = 48.0
+    gas_lag_h: float = 1.0
+
+
+TYPICAL_ROOM = Room()
+QUIET_ROOM = Room(weather_sd_kpa=0.0, temp_sd_c=0.0, gas_lag_h=0.0)
+
+
+def _ou_step(x: float, dt_h: float, sd: float, tau_h: float, rng: random.Random) -> float:
+    """Advance an Ornstein-Uhlenbeck process (mean 0, stationary sd ``sd``)."""
+    if sd == 0:
+        return 0.0
+    a = math.exp(-dt_h / tau_h)
+    return a * x + sd * math.sqrt(1 - a * a) * rng.gauss(0, 1)
+
+
+def leak_test_readings(
+    test: LeakTest,
+    start_ts: float,
+    duration_s: float,
+    rng: random.Random,
+    room: Room = TYPICAL_ROOM,
+    atmospheric_kpa: float = 101.325,
+    mac: str = "5E:00:00:00:00:10",
+) -> list[tuple[float, float, float]]:
+    """Readings (ts, abs kPa, degC) of one leak test, as the database would store them.
+
+    One reading per heartbeat (every 4.5-6.5 min); each goes through the real
+    encoder and decoder, so pressure arrives in 0.46 psi steps and temperature
+    in whole degrees.
+    """
+    decoder = fmt.Fbb0Ac00Decoder()
+    out = []
+    step_s = 60.0
+    weather = rng.gauss(0, room.weather_sd_kpa) if room.weather_sd_kpa else 0.0
+    temp_drift = rng.gauss(0, room.temp_sd_c) if room.temp_sd_c else 0.0
+    t, gas_temp = start_ts, None
+    next_reading = start_ts
+    while t <= start_ts + duration_s:
+        dt_h = step_s / HOUR_S
+        weather = _ou_step(weather, dt_h, room.weather_sd_kpa, room.weather_tau_h, rng)
+        temp_drift = _ou_step(temp_drift, dt_h, room.temp_sd_c, room.temp_tau_h, rng)
+        air = ambient_temp_c(t) + temp_drift
+        if gas_temp is None or room.gas_lag_h == 0:
+            gas_temp = air
+        else:
+            gas_temp += (air - gas_temp) * (1 - math.exp(-dt_h / room.gas_lag_h))
+        if t >= next_reading:
+            ref_abs = abs_kpa(psi_to_kpa(test.ref_gauge_psi_at(t - start_ts)), atmospheric_kpa)
+            actual_abs = ref_abs * (gas_temp + ZERO_C_IN_K) / (REFERENCE_TEMP_C + ZERO_C_IN_K)
+            gauge = (actual_abs - (atmospheric_kpa + weather)) / psi_to_kpa(1.0)
+            mfr = encode_fbb0(
+                mac, max(0.0, gauge + rng.gauss(0, 0.03)), air + rng.gauss(0, 0.2), 0, 0
+            )
+            adv = Advert(t, mac, None, -60, mfr, [fmt.SERVICE_UUID], {})
+            reading = decoder.decode(adv, atmospheric_kpa)
+            if reading is not None and reading.pressure_kpa_abs > atmospheric_kpa:
+                out.append((t, reading.pressure_kpa_abs, reading.temp_c))
+            next_reading = t + rng.uniform(*HEARTBEAT_RANGE_S)
+        t += step_s
+    return out
 
 
 class SimScanner:

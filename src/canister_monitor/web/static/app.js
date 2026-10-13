@@ -10,7 +10,8 @@
   };
   const PALETTE = ["#2563eb", "#059669", "#db2777", "#7c3aed", "#0891b2", "#65a30d", "#dc2626", "#9333ea"];
   const KIND_LABELS = {
-    note: "Note", fill: "Filled", vent: "Vented", balls_added: "Balls added", balls_removed: "Balls removed",
+    note: "Note", fill: "Filled", leak_test: "Leak test (filled, no balls)", vent: "Vented",
+    balls_added: "Balls added", balls_removed: "Balls removed",
   };
   const POLL_CANISTERS_MS = 30_000;
   const POLL_READINGS_MS = 60_000;

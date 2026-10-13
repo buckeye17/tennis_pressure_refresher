@@ -6,3 +6,5 @@ config.toml
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+samples/
+recordings/

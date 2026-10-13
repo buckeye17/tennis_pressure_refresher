@@ -88,8 +88,9 @@ Two independent processes share one SQLite database (WAL mode):
 | Config | TOML | `config.toml`, example in repo |
 | Tests | `pytest` | |
 | Lint/format | `ruff` | |
+| Video (laptop only) | `opencv-python`, `numpy` | Optional extra `video` for the bounce-video tool (§6.3); never installed on the Pi |
 
-Keep runtime dependencies to **bleak, flask, waitress**. Do not add others without a clear reason recorded in the PR/commit message.
+Keep runtime dependencies to **bleak, flask, waitress**. Do not add others without a clear reason recorded in the PR/commit message. The optional `video` extra is the one exception: it is only for the laptop tool.
 
 ---
 
@@ -307,6 +308,124 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 
 **Mass-balance cross-check** (needs canister volume and ball count). The canister pressure drop not explained by the leak gives ΔP_ball (§6.1); the bounce tests give ΔB / b. If the two disagree consistently, the leak calibration or the volumes are off. Diagnostic only.
 
+### 6.3 Video bounce measurement (Phase 8b.2, laptop tool `canister-video`)
+
+**Goal:** measure every drop of a bounce test from video, instead of reading heights by eye. The video can be a clip recorded on the phone, or live from the laptop's built-in webcam or an external one. Manual entry stays; the two can be mixed.
+
+**Why a laptop tool, not the phone or the Pi.**
+- A Pi 3 can't decode minutes of 1080p video in reasonable time, and uploading hundreds of MB over Wi-Fi is slow.
+- In a phone browser, frame access depends on playback quirks and is hard to test.
+- On the laptop, OpenCV decodes Android's H.264 and HEVC frame by frame, faster than real time, and the analysis is plain Python tested with pytest.
+- The only cost is copying the video to the laptop (Quick Share, USB or Google Drive), and with a webcam there's nothing to copy.
+- Results go to the Pi through its API; review and saving happen in the dashboard.
+
+**Camera placement (both modes).**
+- Steady, at least 2–3 m from the drop line, framing the whole drop height and the floor, with the drop path near the middle of the frame. Bright light (less blur at impact); a background that isn't yellow helps.
+- A webcam is landscape. To cover a 6 ft drop it needs about 3 m of distance with the camera about 1 m up; a 100 in drop needs about 4 m with the camera about 1.3 m up.
+- A phone: portrait, 1× lens (not the ultrawide), 1080p, 60 fps if available. Slow motion works but isn't needed.
+- Tilt is corrected by the height calibration below, so a laptop screen leaning back is fine.
+
+**Height marks.** Two marks on the wall or door frame right at the drop line, the ball's path a few cm in front:
+- the **drop height** (already used for every test);
+- a **mid mark** near typical rebound heights, e.g. 36 in for a 6 ft drop or 50 in for 100 in. It is stored with the setup (`bounce_setups.mid_mark_cm`).
+
+**Dropping.** Each session starts with three short **calibration holds**: hold a ball still for about 2 s resting on the floor, then against the mid mark, then with its bottom at the drop-height mark. After that, release each ball with its bottom at the drop-height mark, in number order, the same number of times each (default 3), and catch it after its first bounce.
+
+**Workflow, clip from the phone.**
+1. Record as above and copy the clip to the laptop.
+2. Run `canister-video CLIP.mp4` (`--pi http://canisters.local:5000` by default).
+   - It lists active batches and setups from the Pi to choose from (or take `--batch`, `--setup`, `--drops-per-ball`).
+   - It analyzes the clip, prints a table of drops, uploads the result as a **draft**, and prints the review link. `--dry-run` skips the upload.
+
+**Workflow, live webcam.** `canister-video --camera 0` (built-in) or `--camera 1` (external). `--list-cameras` shows what's connected.
+- A window shows the live picture with the detected ball outlined and a status line. The status guides you through the calibration holds, then says which ball and drop is next, and shows each drop's height as soon as the ball is caught.
+- Keys: **U** undoes the last drop, **N** skips to the next ball, **R** redoes the calibration, **Q** or **Enter** finishes. Finishing uploads a draft, as for a clip.
+- It asks the camera for 1280×720 at 60 fps (`--size`, `--fps`) and shows the rate it actually gets. It warns below 25 fps: webcams slow down in dim light, which also blurs the ball.
+- Timestamps come from the capture clock, so a dropped frame doesn't distort the fits.
+- The session is also saved to `recordings/<time>.mp4` (git-ignored) so it can be re-analyzed as a clip. `--no-save` turns this off. Expect about 100 MB for 3 minutes at 720p.
+
+**Review** in the dashboard, for both modes. The batch card shows "Video results to review". Opening it fills the usual test grid, with each drop's apex picture and any warnings. Drops can be moved to another ball, rejected or typed over. Saving creates a normal test marked `source = video` and linked to the analysis.
+
+**Finding the ball** (`video/detect.py`).
+- Each frame is scaled to about 640 px tall.
+- Pixels must be optic yellow (HSV range) **and** changed from a running background (so yellow things that don't move are ignored), then cleaned up; the blob nearest the predicted position wins.
+- The yellow range is learned from the first clear moving yellow blob; `--pick` opens a window to click the ball instead.
+- Per frame: centre (cx, cy) and width w. The **bottom of the ball is cy + w/2**: motion blur stretches a blob vertically, which would push its lowest pixel too low, but leaves its centre and width alone.
+
+**Splitting into drops and measuring** (`video/measure.py`). The measurement is a streaming state machine. It takes one observation at a time (time, cx, cy, w) and emits each drop as soon as it's complete, so the live mode and a clip share the same code.
+- Calibration holds are found as the first three times the ball sits still for at least 1.5 s.
+- Each drop is release (at rest, then accelerating down) → impact (the lowest point, where it reverses) → rise → apex. Later bounces and the catch are ignored until the next release.
+- Fit parabolas y(t) to the ball's bottom: one to the fall (release to just before impact), one to the rise (just after impact to just past the apex).
+  - **release** = vertex of the fall parabola, or the resting level if the hand hid the start;
+  - **floor** = where the fall and rise parabolas meet;
+  - **apex** = vertex of the rise parabola.
+- **Height calibration.** Along the drop line, image position maps to height by a 1-D projective map: three numbers, which absorb camera tilt and distance. The three calibration holds (floor = 0, mid mark, drop height) fix it exactly.
+  - A tilted camera matters: without this, each degree of tilt adds about 0.5 cm of error at a typical apex (5° ≈ 2.4 cm for a 6 ft drop, 10° ≈ 4.9 cm), and laptop screens usually lean back 10–20°.
+- **Rebound = map(apex)**. Every release is also read through the map. A release more than 2 cm off the drop height gets a warning, and the rebound is scaled by drop height / actual release, since rebound is close to proportional to drop height.
+- **No calibration holds** (e.g. an old clip): fall back to the linear self-calibration from each drop's own release and floor, **rebound = drop height × (floor − apex) / (floor − release)** in pixels. This is exact only for a level camera, so the review warns about it.
+- Only heights are calibrated; times are used just for the shape of each fit, so slow motion is fine.
+- The calibration is per session, so the camera must not move after the holds. If the floor or release positions drift, the tool asks for new holds (live) or warns (clip).
+- Drops are assigned to balls in order: drops-per-ball each, starting at ball 1.
+
+**Warnings shown in review:**
+- parabola fit residuals too large;
+- too few frames on either side;
+- release not seen;
+- ball width in pixels more than 15% off what the drop's own scale predicts (6.7 cm across);
+- rebound outside 30–80% of the drop height.
+
+**Expected precision**, for a 1080p portrait clip of a 6 ft drop:
+
+| Source of error | Size |
+|---|---|
+| Timing of the apex, even at 30 fps | under 2 mm, before fitting |
+| Picture detail at analysis size | about 0.35 cm per pixel; fitting the apex over many frames gets well below that |
+| Release 1 cm off the mark | measured and corrected; uncorrected it would be about 0.5% of the rebound |
+| Camera tilt | removed by the three-point calibration; about 0.5 cm per degree without it |
+| Lens distortion (webcams especially) | small near the centre of the frame; the mid mark near rebound height keeps it small at the apex |
+| By eye, for comparison | about ±2.5–5 cm |
+
+To be confirmed on real clips (§13).
+
+**Stored on the Pi.** The video stays on the laptop.
+
+```sql
+CREATE TABLE bounce_video_analyses (
+    id           INTEGER PRIMARY KEY,
+    created_ts   REAL NOT NULL,
+    batch_id     INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+    setup_id     INTEGER NOT NULL REFERENCES bounce_setups(id),
+    filename     TEXT NOT NULL,
+    video_json   TEXT NOT NULL,          -- frames, fps, size, duration
+    params_json  TEXT NOT NULL,          -- tool version, colour range, thresholds
+    status       TEXT NOT NULL,          -- draft | used | discarded
+    test_id      INTEGER REFERENCES bounce_tests(id) ON DELETE SET NULL
+);
+
+CREATE TABLE bounce_video_drops (
+    id           INTEGER PRIMARY KEY,
+    analysis_id  INTEGER NOT NULL REFERENCES bounce_video_analyses(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,       -- order in the clip
+    ball_no      INTEGER NOT NULL,       -- as assigned; review may change it
+    rebound_cm   REAL,                   -- NULL when the drop couldn't be measured
+    detail_json  TEXT NOT NULL,          -- release/floor/apex px, frame times, fit residuals, warnings
+    image        BLOB                    -- JPEG crop around the apex with the lines drawn, ~10 KB
+);
+
+ALTER TABLE bounce_tests ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';  -- manual | video
+ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark between floor and drop height
+```
+
+`filename` is the clip, or the saved recording for a live session. `video_json` includes the source (`file` or `camera`) and the calibration (pixel rows of the three holds and the fitted map).
+
+**Install** (laptop only): `pip install -e ".[video]"` in the repo's venv. This adds OpenCV and NumPy and the `canister-video` command. Calls to the Pi use `urllib` from the standard library.
+
+**Testing.**
+- `video/synth.py` renders artificial clips with cv2.VideoWriter: a yellow ball with known physics (including air drag), motion blur, noise, a cluttered background, the hand at release, a second bounce and a catch, calibration holds, a camera tilted up to 20°, and an occasional dropped frame.
+  - The analysis must recover each rebound to within 0.5%.
+  - The same synthetic frames fed one at a time through the live code path must give the same results.
+- Real clips go in `samples/` (git-ignored). Each is checked against a frame-by-frame reading by hand, and the results are recorded in §13.
+
 ---
 
 ## 7. Data model (SQLite)
@@ -421,6 +540,8 @@ ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id) ON DE
 ```
 
 A setup can't be deleted once a test, reference value or conversion uses it. Deleting a batch deletes its tests; events that named it keep their note.
+
+**Planned (Phase 8b.2, §6.3):** `bounce_video_analyses`, `bounce_video_drops`, and `bounce_tests.source`.
 
 **Write policy (collector):**
 - Store a raw advert when its payload differs from the previous one for that MAC, **or** at most once per `raw_heartbeat_minutes` (default 10) if unchanged.
@@ -576,6 +697,12 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │   ├── compensation.py
 │   ├── trends.py                 # Phase 7
 │   ├── leak.py                   # Phase 8
+│   ├── bounce.py                 # Phase 8 (§6.2)
+│   ├── video/                    # Phase 8b.2, laptop only (§6.3)
+│   │   ├── detect.py             # find the ball in each frame
+│   │   ├── measure.py            # split into drops, fit parabolas, rebound heights
+│   │   ├── synth.py              # artificial test clips
+│   │   └── cli.py                # canister-video: analyze, upload draft
 │   ├── collector.py
 │   ├── simulate.py
 │   ├── decoders/
@@ -588,6 +715,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │       ├── __init__.py           # create_app
 │       ├── __main__.py           # waitress entrypoint
 │       ├── api.py
+│       ├── bounce_api.py         # Phase 8 (§6.2)
 │       ├── templates/index.html
 │       └── static/{app.js,style.css,vendor/uplot/...}
 ├── tools/{scan.py,capture.py,redecode.py,leak_sim.py}
@@ -721,6 +849,20 @@ Next, in order. Data collection comes first because it takes the longest:
   - Unsaved drops ask before closing. Units switch between in and cm.
 
   Checked on desktop and at 375 px phone width.
+- **8b.2 — Video measurement** (§6.3), in order:
+  1. Analysis core (`video/detect.py`; `video/measure.py` as a streaming state machine with the three-point calibration), the synthetic clip generator, and `canister-video CLIP --dry-run` printing results. No Pi needed.
+  2. Live mode: `--camera`, `--list-cameras`, the preview window with guidance and keys, recording to `recordings/`.
+  3. Tune on real footage: the user's phone clips in `samples/` and webcam sessions. Record the results in §13.
+  4. Pi side:
+     - migration for the video tables, `bounce_tests.source` and `bounce_setups.mid_mark_cm` (editable in the setup form);
+     - API to upload, list and discard drafts and to fetch drop images;
+     - dashboard review that fills the test grid with pictures and warnings.
+  5. Upload from the CLI; README section.
+
+  Acceptance:
+  - synthetic clips are measured to within 0.5%, including tilted ones;
+  - real clips and webcam sessions agree with a frame-by-frame reading by hand to within ±1 cm;
+  - a 10-ball test takes under 5 minutes, from copying the clip or finishing the live session to saving the test.
 - **8c — Like-new from tests.** Resolve the new-ball reference (own → same brand/model → manual, with the source shown). Show each test as a share of new and the share of sampled balls in the like-new band. A batch chart shows tests as points with the band.
 
   Acceptance: unit tests for reference resolution and band shares.
@@ -753,6 +895,7 @@ Next, in order. Data collection comes first because it takes the longest:
 | 4 | MACs and canister names | Sensor 1: `30:94:A8:11:11:11`. Others TBD (guess: `…:22:22:22` etc.) |
 | 5 | Is the temperature byte signed (below 0 °C behavior)? | _TBD, low priority_ |
 | 6 | Local atmospheric pressure to configure | _TBD (default 101.325 kPa)_ |
+| 7 | Does video detection work on real footage (the user's phone and webcams, lighting, floor, background)? Precision against a frame-by-frame reading by hand? Which webcams reach 25+ fps in the test spot's light? | _TBD: needs sample clips in `samples/` and webcam sessions (§6.3)_ |
 
 ---
 

@@ -308,7 +308,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 
 **Mass-balance cross-check** (needs canister volume and ball count). The canister pressure drop not explained by the leak gives ΔP_ball (§6.1); the bounce tests give ΔB / b. If the two disagree consistently, the leak calibration or the volumes are off. Diagnostic only.
 
-### 6.3 Video bounce measurement (Phase 8b.2, laptop tool `canister-video`)
+### 6.3 Video bounce measurement (Phase 8b.2, laptop web app `canister-video`)
 
 **Goal:** measure every drop of a bounce test from video, instead of reading heights by eye. The video can be a clip recorded on the phone, or live from the laptop's built-in webcam or an external one. Manual entry stays; the two can be mixed.
 
@@ -317,7 +317,8 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - In a phone browser, frame access depends on playback quirks and is hard to test.
 - On the laptop, OpenCV decodes Android's H.264 and HEVC frame by frame, faster than real time, and the analysis is plain Python tested with pytest.
 - The only cost is copying the video to the laptop (Quick Share, USB or Google Drive), and with a webcam there's nothing to copy.
-- Results go to the Pi through its API; review and saving happen in the dashboard.
+- The user works through a **web app served by the laptop** (below): the browser is only the screen, and capture and analysis run in Python. Analysis isn't duplicated in browser JavaScript, which would be a second implementation and hard to test.
+- Finished tests go to the Pi through its API.
 
 **Camera placement (both modes).**
 - Steady, at least 2–3 m from the drop line, framing the whole drop height and the floor, with the drop path near the middle of the frame. Bright light (less blur at impact); a background that isn't yellow helps.
@@ -331,26 +332,37 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 
 **Dropping.** Each session starts with three short **calibration holds**: hold a ball still for about 2 s resting on the floor, then against the mid mark, then with its bottom at the drop-height mark. After that, release each ball with its bottom at the drop-height mark, in number order, the same number of times each (default 3), and catch it after its first bounce.
 
-**Workflow, clip from the phone.**
-1. Record as above and copy the clip to the laptop.
-2. Run `canister-video CLIP.mp4` (`--pi http://canisters.local:5000` by default).
-   - It lists active batches and setups from the Pi to choose from (or take `--batch`, `--setup`, `--drops-per-ball`).
-   - It analyzes the clip, prints a table of drops, uploads the result as a **draft**, and prints the review link. `--dry-run` skips the upload.
-
-**Workflow, live webcam.** `canister-video --camera 0` (built-in) or `--camera 1` (external). `--list-cameras` shows what's connected.
-- A window shows the live picture with the detected ball outlined and a status line. The status guides you through the calibration holds, then says which ball and drop is next, and shows each drop's height as soon as the ball is caught.
-- Keys: **U** undoes the last drop, **N** skips to the next ball, **R** redoes the calibration, **Q** or **Enter** finishes. Finishing uploads a draft, as for a clip.
-- It asks the camera for 1280×720 at 60 fps (`--size`, `--fps`) and shows the rate it actually gets. It warns below 25 fps: webcams slow down in dim light, which also blurs the ball.
-- Timestamps come from the capture clock, so a dropped frame doesn't distort the fits.
-- The session is also saved to `recordings/<time>.mp4` (git-ignored) so it can be re-analyzed as a clip. `--no-save` turns this off. Expect about 100 MB for 3 minutes at 720p.
-
-**Review** in the dashboard, for both modes. The batch card shows "Video results to review". Opening it fills the usual test grid, with each drop's apex picture and any warnings. Drops can be moved to another ball, rejected or typed over. Saving creates a normal test marked `source = video` and linked to the analysis.
+**The laptop web app** (`video/app.py`).
+- `canister-video` with no arguments starts a small Flask server on the laptop and opens it in the browser. It listens on `http://127.0.0.1:5100`, the laptop only (`--port`). `--pi URL` sets the Pi (default `http://canisters.local:5000`); `--no-browser` skips opening the browser.
+- One session at a time. A background worker runs capture and analysis (`pipeline.Analyzer`, the same code as for clips). The page polls `/api/state` a few times a second for status, drops and progress, and shows the preview from `/preview.mjpg`.
+- **1. Set up.** The page shows whether the Pi is reachable. Pick the batch and setup from the Pi's lists; drop height and mid mark come from the setup. Drops per ball defaults to 3.
+- **2. Source.**
+  - **A webcam:** OpenCV can't list camera names, so indices 0–4 are probed and shown with the size each delivers.
+  - **A phone clip:** dragged onto the page, or chosen with a file picker.
+- **3a. Live.**
+  - A preview at ~10–15 fps shows the ball outlined, the calibration rows once set, and each drop's apex line. The analysis itself uses every frame the camera delivers.
+  - A prompt guides the user: "Hold the ball on the floor", "…at the mid mark", "…at the drop mark", then "Ball 2, drop 1". Each height is added to a list when the ball is caught.
+  - Buttons: **Undo** last drop, **Next ball**, **Recalibrate**, **Finish**. Clicking the ball in the preview teaches its colour, like `--pick`.
+  - The app asks the camera for 1280×720 at 60 fps and shows the rate it actually gets. It warns below 25 fps: webcams slow down in dim light, which also blurs the ball.
+  - Timestamps come from the capture clock, so a dropped frame doesn't distort the fits.
+  - The session is also recorded to `recordings/<time>.mp4` (git-ignored), so it can be re-analysed as a clip. Expect about 100 MB for 3 minutes at 720p.
+- **3b. Clip.** The clip is uploaded to the local server, kept in `recordings/`, and analysed with a progress bar, usually in seconds.
+- **4. Review**, on the laptop: one row per drop with its picture and any warnings.
+  - Each drop can be moved to another ball, rejected, or its height typed over (it is then marked as edited).
+  - Per-ball medians update as you go.
+  - **Save to Pi** creates the bounce test, `source = video`, with the analysis details and pictures, in one request.
+  - If the Pi can't be reached, the session is kept in `recordings/<time>.json` and can be sent from the app later.
+- The **command line** stays for scripting and debugging: `canister-video CLIP --drop-height 72in --mid-mark 36in --dry-run [--json] [--debug DIR]`.
 
 **Finding the ball** (`video/detect.py`).
 - Each frame is scaled to about 640 px tall.
-- Pixels must be optic yellow (HSV range) **and** changed from a running background (so yellow things that don't move are ignored), then cleaned up; the blob nearest the predicted position wins.
-- The yellow range is learned from the first clear moving yellow blob; `--pick` opens a window to click the ball instead.
-- Per frame: centre (cx, cy) and width w. The **bottom of the ball is cy + w/2**: motion blur stretches a blob vertically, which would push its lowest pixel too low, but leaves its centre and width alone.
+- Optic-yellow pixels (HSV range) are grouped into blobs, and blobs of the wrong shape are dropped. The ball is picked up as the first yellow blob that **moves**, so a yellow thing sitting still in the background is ignored. From then on it's tracked as the blob nearest where it should be.
+- The default yellow range can be replaced by clicking the ball: in the app's preview, or with `--pick` on the command line.
+- Per frame: centre, width, and the **bottom edge to a fraction of a pixel**. Down a strip through the ball's centre, in the full-resolution frame, each row's colour is placed between the ball's colour and the background's; the edge is where it crosses halfway.
+  - Motion blur smears an edge symmetrically, so the halfway point is where the ball was at mid-exposure. One measure therefore serves a ball at rest and one in flight.
+  - The hand holding a ball covers its top, not its bottom.
+  - Without this, whole-pixel steps showed up as ~0.7 cm steps in release heights.
+- Picks up a ball that was missed for a moment while held still, at the spot it was last seen; otherwise a ball must move before it's picked up.
 
 **Splitting into drops and measuring** (`video/measure.py`). The measurement is a streaming state machine. It takes one observation at a time (time, cx, cy, w) and emits each drop as soon as it's complete, so the live mode and a clip share the same code.
 - Calibration holds are found as the first three times the ball sits still for at least 1.5 s.
@@ -361,13 +373,15 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
   - **apex** = vertex of the rise parabola.
 - **Height calibration.** Along the drop line, image position maps to height by a 1-D projective map: three numbers, which absorb camera tilt and distance. The three calibration holds (floor = 0, mid mark, drop height) fix it exactly.
   - A tilted camera matters: without this, each degree of tilt adds about 0.5 cm of error at a typical apex (5° ≈ 2.4 cm for a 6 ft drop, 10° ≈ 4.9 cm), and laptop screens usually lean back 10–20°.
-- **Rebound = map(apex)**. Every release is also read through the map. A release more than 2 cm off the drop height gets a warning, and the rebound is scaled by drop height / actual release, since rebound is close to proportional to drop height.
+- **Parabolas are fitted in centimetres, not rows**, when calibrated. Through a tilted camera a fall isn't a parabola in rows; fitting rows put the floor 2 cm off at 15° tilt.
+- **Rebound = apex height**, read through the map. Every release is also read through the map. A release more than 2 cm off gets a warning, and the rebound is scaled by drop height / actual release, since rebound is close to proportional to drop height.
+- **At the end of the session the drop-mark row is re-anchored** on the median of all releases (the calibration hold plus every drop), and all drops are recomputed. The mark's only reference is where the user holds the ball, so the median release is a better estimate than one hold: a hold 3 cm off would otherwise skew every drop by about 1%. In live mode the numbers shown during the session are provisional, which is why drop pictures don't print the height.
 - **No calibration holds** (e.g. an old clip): fall back to the linear self-calibration from each drop's own release and floor, **rebound = drop height × (floor − apex) / (floor − release)** in pixels. This is exact only for a level camera, so the review warns about it.
 - Only heights are calibrated; times are used just for the shape of each fit, so slow motion is fine.
 - The calibration is per session, so the camera must not move after the holds. If the floor or release positions drift, the tool asks for new holds (live) or warns (clip).
 - Drops are assigned to balls in order: drops-per-ball each, starting at ball 1.
 
-**Warnings shown in review:**
+**Warnings shown in review** (in the laptop app):
 - parabola fit residuals too large;
 - too few frames on either side;
 - release not seen;
@@ -387,43 +401,42 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 
 To be confirmed on real clips (§13).
 
-**Stored on the Pi.** The video stays on the laptop.
+**Stored on the Pi**, only once a reviewed test is saved. The video stays on the laptop.
 
 ```sql
 CREATE TABLE bounce_video_analyses (
     id           INTEGER PRIMARY KEY,
-    created_ts   REAL NOT NULL,
-    batch_id     INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
-    setup_id     INTEGER NOT NULL REFERENCES bounce_setups(id),
+    test_id      INTEGER NOT NULL UNIQUE REFERENCES bounce_tests(id) ON DELETE CASCADE,
     filename     TEXT NOT NULL,
-    video_json   TEXT NOT NULL,          -- frames, fps, size, duration
-    params_json  TEXT NOT NULL,          -- tool version, colour range, thresholds
-    status       TEXT NOT NULL,          -- draft | used | discarded
-    test_id      INTEGER REFERENCES bounce_tests(id) ON DELETE SET NULL
+    video_json   TEXT NOT NULL,          -- source, frames, fps, size, duration, calibration
+    params_json  TEXT NOT NULL           -- tool version, colour range, thresholds
 );
 
 CREATE TABLE bounce_video_drops (
     id           INTEGER PRIMARY KEY,
     analysis_id  INTEGER NOT NULL REFERENCES bounce_video_analyses(id) ON DELETE CASCADE,
     seq          INTEGER NOT NULL,       -- order in the clip
-    ball_no      INTEGER NOT NULL,       -- as assigned; review may change it
-    rebound_cm   REAL,                   -- NULL when the drop couldn't be measured
-    detail_json  TEXT NOT NULL,          -- release/floor/apex px, frame times, fit residuals, warnings
-    image        BLOB                    -- JPEG crop around the apex with the lines drawn, ~10 KB
+    ball_no      INTEGER NOT NULL,       -- after review
+    rebound_cm   REAL,                   -- as measured; NULL if it couldn't be
+    kept         INTEGER NOT NULL,       -- 0: rejected in review (kept for the record)
+    edited_cm    REAL,                   -- the height typed over it in review, if any
+    detail_json  TEXT NOT NULL,          -- release/floor/apex rows, frame times, fit residuals, warnings
+    image        BLOB                    -- JPEG of the drop with its lines drawn, ~20 KB
 );
 
 ALTER TABLE bounce_tests ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';  -- manual | video
 ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark between floor and drop height
 ```
 
-`filename` is the clip, or the saved recording for a live session. `video_json` includes the source (`file` or `camera`) and the calibration (pixel rows of the three holds and the fitted map).
+`filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures.
 
-**Install** (laptop only): `pip install -e ".[video]"` in the repo's venv. This adds OpenCV and NumPy and the `canister-video` command. Calls to the Pi use `urllib` from the standard library.
+**Install** (laptop only): `pip install -e ".[video]"` in the repo's venv. This adds OpenCV and NumPy and the `canister-video` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
 
 **Testing.**
 - `video/synth.py` renders artificial clips with cv2.VideoWriter: a yellow ball with known physics (including air drag), motion blur, noise, a cluttered background, the hand at release, a second bounce and a catch, calibration holds, a camera tilted up to 20°, and an occasional dropped frame.
   - The analysis must recover each rebound to within 0.5%.
   - The same synthetic frames fed one at a time through the live code path must give the same results.
+- The web app is tested with Flask's test client and a **synthetic camera**: a frame source that renders a session in real time, standing in for a webcam. A full session must run through it: holds, drops, undo, finish, review edits, then Save to a fake Pi.
 - Real clips go in `samples/` (git-ignored). Each is checked against a frame-by-frame reading by hand, and the results are recorded in §13.
 
 ---
@@ -702,7 +715,10 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │   │   ├── detect.py             # find the ball in each frame
 │   │   ├── measure.py            # split into drops, fit parabolas, rebound heights
 │   │   ├── synth.py              # artificial test clips
-│   │   └── cli.py                # canister-video: analyze, upload draft
+│   │   ├── pipeline.py           # Analyzer: frames in, numbered drops and pictures out
+│   │   ├── app.py                # the laptop web app (Flask): sessions, preview, review
+│   │   ├── templates/, static/   # its page
+│   │   └── cli.py                # canister-video: start the app, or analyze a clip
 │   ├── collector.py
 │   ├── simulate.py
 │   ├── decoders/
@@ -850,19 +866,29 @@ Next, in order. Data collection comes first because it takes the longest:
 
   Checked on desktop and at 375 px phone width.
 - **8b.2 — Video measurement** (§6.3), in order:
-  1. Analysis core (`video/detect.py`; `video/measure.py` as a streaming state machine with the three-point calibration), the synthetic clip generator, and `canister-video CLIP --dry-run` printing results. No Pi needed.
-  2. Live mode: `--camera`, `--list-cameras`, the preview window with guidance and keys, recording to `recordings/`.
+  1. *(done)* Analysis core (`video/detect.py`; `video/measure.py` as a streaming state machine with the three-point calibration), the synthetic clip generator, and `canister-video CLIP --dry-run` printing results. No Pi needed.
+
+     As built:
+     - `video/pipeline.py` (`Analyzer`: frames in, numbered drops and pictures out; shared by clips and the coming live mode) and `video/cli.py`. Flags: `--drop-height`, `--mid-mark` (lengths with units, e.g. `72in`), `--drops-per-ball`, `--pick`, `--json`, `--debug DIR` (per-frame trace, result JSON, a picture per drop).
+     - `python -m canister_monitor.video.synth OUT.mp4 --tilt 12 [--landscape]` writes a test clip and its true heights.
+     - `tests/test_video.py` (19 tests, skipped without OpenCV) covers: calibration maths; the state machine on exact positions (level and 15° tilt); second bounces ignored; off-mark releases corrected and flagged; the uncalibrated fallback; rendered clips in portrait and landscape with a yellow distractor; the live path with ~6% of frames dropped; the CLI.
+     - Results on rendered clips (ball physics with air drag, blur, noise, hand at holds): 10 random setups (tilt −6° to 15°, 30/60 fps, portrait and landscape) found 60/60 drops and calibrated every session. Worst error 0.26% of the rebound at 640 px or more, 0.74% at 640×360 where the ball is only 8 px across (0.19% for the same setup at 1280×720), against the 0.5% target. About 3 ms per frame on the laptop.
+     - Without calibration holds, a level camera gives ~0.1%, but 10° of tilt gives ~4.5%, with a warning.
+  2. **The laptop web app** (`video/app.py`): the session worker, camera probing and capture with recording, clip upload with progress, the MJPEG preview, live state and controls, and the review screen.
+     - Save to Pi is disabled until step 5; review results can be downloaded as JSON meanwhile.
+     - Tests use Flask's test client and a synthetic camera.
   3. Tune on real footage: the user's phone clips in `samples/` and webcam sessions. Record the results in §13.
   4. Pi side:
      - migration for the video tables, `bounce_tests.source` and `bounce_setups.mid_mark_cm` (editable in the setup form);
-     - API to upload, list and discard drafts and to fetch drop images;
-     - dashboard review that fills the test grid with pictures and warnings.
-  5. Upload from the CLI; README section.
+     - an API endpoint that accepts a reviewed video test (the test, analysis details and pictures) in one request, and one that serves drop pictures;
+     - dashboard: video tests marked, pictures in the tests table, `source` in the CSV.
+  5. Save to Pi from the app, keeping the session locally to send later if the Pi is offline; README section.
 
   Acceptance:
   - synthetic clips are measured to within 0.5%, including tilted ones;
   - real clips and webcam sessions agree with a frame-by-frame reading by hand to within ±1 cm;
-  - a 10-ball test takes under 5 minutes, from copying the clip or finishing the live session to saving the test.
+  - a 10-ball test takes under 5 minutes, from copying the clip or finishing the live session to saving the test;
+  - the app is usable on the laptop's own screen, and its preview stays at 10 fps or more while analysis keeps up with the camera.
 - **8c — Like-new from tests.** Resolve the new-ball reference (own → same brand/model → manual, with the source shown). Show each test as a share of new and the share of sampled balls in the like-new band. A batch chart shows tests as points with the band.
 
   Acceptance: unit tests for reference resolution and band shares.

@@ -88,6 +88,7 @@ Two independent processes share one SQLite database (WAL mode):
 | Config | TOML | `config.toml`, example in repo |
 | Tests | `pytest` | |
 | Lint/format | `ruff` | |
+| Environment | `uv` | Every Python command in the repo runs through uv (`uv sync`, `uv run`); `uv.lock` is committed. The Pi's service venv is built by `deploy/install.sh` (Phase 6) |
 | Video (laptop only) | `opencv-python`, `numpy` | Optional extra `video` for the bounce-video tool (§6.3); never installed on the Pi |
 
 Keep runtime dependencies to **bleak, flask, waitress**. Do not add others without a clear reason recorded in the PR/commit message. The optional `video` extra is the one exception: it is only for the laptop tool.
@@ -430,7 +431,7 @@ ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark bet
 
 `filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures.
 
-**Install** (laptop only): `pip install -e ".[video]"` in the repo's venv. This adds OpenCV and NumPy and the `canister-video` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
+**Install** (laptop only): the `video` extra, with `uv sync --all-extras` (dev tools too), then `uv run canister-video`; or `uv run --extra video canister-video` on its own. This adds OpenCV and NumPy and the `canister-video` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
 
 **Testing.**
 - `video/synth.py` renders artificial clips with cv2.VideoWriter: a yellow ball with known physics (including air drag), motion blur, noise, a cluttered background, the hand at release, a second bounce and a catch, calibration holds, a camera tilted up to 20°, and an occasional dropped frame.
@@ -700,6 +701,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 ├── PLAN.md                       # this file
 ├── README.md                     # quickstart for humans
 ├── pyproject.toml                # deps, ruff, pytest config, console scripts
+├── uv.lock                       # locked dependencies (uv sync)
 ├── config.example.toml
 ├── .gitignore                    # config.toml, data/, .venv/, __pycache__/
 ├── src/canister_monitor/
@@ -775,7 +777,7 @@ Acceptance: sensor MACs known; format identified (or a new byte table documented
 Tasks: `pyproject.toml`, package layout, ruff + pytest config, `config.py` with example config, `decoders/` with all three formats (`fbb0_ac00`, `br_27a5`, `tpms_0100`), `compensation.py`, tests.
 
 Acceptance:
-- `ruff check .` and `pytest` pass.
+- `uv run ruff check .` and `uv run pytest` pass.
 - `br_27a5` decodes both fixtures in §5.3 within ±0.1 psi and exact temp/voltage.
 - `fbb0_ac00` decodes every captured fixture in `tests/fixtures/captured/` to the app's psi (±0.05) and °C.
 - `tpms_0100` decodes synthetic fixtures; malformed payloads (wrong length, garbage) return `None` without raising, for all decoders.
@@ -792,7 +794,7 @@ Acceptance: tests use a temp DB; migrations are idempotent; heartbeat/dedupe wri
 Tasks: `collector.py` pipeline, watchdog, graceful shutdown, `--discover`, `simulate.py` with `--speed`.
 
 Acceptance:
-- `python -m canister_monitor.collector --simulate --speed 600` produces a multi-day dataset in a few minutes.
+- `uv run python -m canister_monitor.collector --simulate --speed 600` produces a multi-day dataset in a few minutes.
 - Pipeline test feeds a scripted list of `Advert`s and asserts the exact rows written.
 - Watchdog logic tested with an injected fake scanner and clock.
 - On real hardware (when available): readings appear for all assigned sensors within 10 minutes of start.
@@ -870,7 +872,7 @@ Next, in order. Data collection comes first because it takes the longest:
 
      As built:
      - `video/pipeline.py` (`Analyzer`: frames in, numbered drops and pictures out; shared by clips and the coming live mode) and `video/cli.py`. Flags: `--drop-height`, `--mid-mark` (lengths with units, e.g. `72in`), `--drops-per-ball`, `--pick`, `--json`, `--debug DIR` (per-frame trace, result JSON, a picture per drop).
-     - `python -m canister_monitor.video.synth OUT.mp4 --tilt 12 [--landscape]` writes a test clip and its true heights.
+     - `uv run --extra video python -m canister_monitor.video.synth OUT.mp4 --tilt 12 [--landscape]` writes a test clip and its true heights.
      - `tests/test_video.py` (19 tests, skipped without OpenCV) covers: calibration maths; the state machine on exact positions (level and 15° tilt); second bounces ignored; off-mark releases corrected and flagged; the uncalibrated fallback; rendered clips in portrait and landscape with a yellow distractor; the live path with ~6% of frames dropped; the CLI.
      - Results on rendered clips (ball physics with air drag, blur, noise, hand at holds): 10 random setups (tilt −6° to 15°, 30/60 fps, portrait and landscape) found 60/60 drops and calibrated every session. Worst error 0.26% of the rebound at 640 px or more, 0.74% at 640×360 where the ball is only 8 px across (0.19% for the same setup at 1280×720), against the 0.5% target. About 3 ms per frame on the laptop.
      - Without calibration holds, a level camera gives ~0.1%, but 10° of tilt gives ~4.5%, with a warning.
@@ -965,6 +967,7 @@ Next, in order. Data collection comes first because it takes the longest:
 9. Decoders must never raise on bad input.
 10. When protocol facts are confirmed or corrected, update §5 and §13 of this file in the same change.
 11. Small, focused commits with messages that reference the phase (e.g. `phase-2: add reading heartbeat policy`).
+12. **Run Python through uv** (`uv run pytest`, `uv run --extra video canister-video`, `uv sync`), never `.venv/bin/...`, bare `python`, or `pip`. The exception is the Pi's service venv, which `deploy/install.sh` builds with pip.
 
 ---
 

@@ -122,21 +122,22 @@ yes`.
 
 ## Development (any computer, no Bluetooth needed)
 
-```bash
-python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
-```
+Every Python command goes through [uv](https://docs.astral.sh/uv/), which builds `.venv` from
+`uv.lock`:
 
-(On Windows use `.venv\Scripts\...`.)
+```bash
+uv sync --all-extras    # dev tools, plus OpenCV for the laptop video tool
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
+```
 
 The simulator feeds four fake canisters (one leaking) through the real pipeline, into a separate
 `data/canisters-sim.db`:
 
 ```bash
 cp config.example.toml config.toml
-.venv/bin/python -m canister_monitor.collector --simulate --start-days-ago 3 --speed 2000
-.venv/bin/python -m canister_monitor.web --simulate    # in another terminal
+uv run python -m canister_monitor.collector --simulate --start-days-ago 3 --speed 2000
+uv run python -m canister_monitor.web --simulate    # in another terminal
 ```
 
 `--start-days-ago 3 --speed 2000` fast-forwards three days of history in about two minutes, then

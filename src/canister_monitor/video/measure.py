@@ -18,7 +18,8 @@ fixed by three calibration holds at known heights (floor, mid mark, drop mark).
 That absorbs camera tilt, which would otherwise add ~0.5 cm per degree. At the
 end of a session the drop-mark row is re-anchored on the median of all
 releases, so one sloppy hold can't skew every drop, and the drops are
-recomputed (``RefinedEvent``).
+recomputed (``RefinedEvent``). A live session can be recalibrated part way
+(the camera moved); each drop keeps the calibration it was measured with.
 """
 
 import statistics
@@ -46,6 +47,7 @@ class Settings:
 
     still_s: float = 0.25  # at rest this long counts as still
     still_tol_r: float = 0.15  # ... moving less than this
+    still_outliers: int = 2  # this many frames off and back again don't end a still spell
     hold_s: float = 1.5  # a calibration hold lasts at least this long
     hold_gap_r: float = 2.0  # calibration holds must be at least this far apart
     fall_start_r: float = 0.6  # a fall starts this far below the rest level
@@ -155,9 +157,9 @@ class DropEvent:
 
 @dataclass(frozen=True)
 class RefinedEvent:
-    """End of session: the calibration re-anchored and every drop recomputed."""
+    """End of session: the calibrations re-anchored and every drop recomputed."""
 
-    calibration: Calibration
+    calibration: Calibration | None  # the latest one
     drops: tuple[Drop, ...]
 
 
@@ -196,11 +198,15 @@ class Measurer:
         self.holds: list[Hold] = []
         self.calibration: Calibration | None = None
         self.drops: list[Drop] = []
+        self._holds_open = True  # still spells count as calibration holds
+        self._next_seq = 0
+        self._drop_cal: dict[int, Calibration | None] = {}  # seq -> calibration it used
         self._radii: deque[float] = deque(maxlen=120)
         self._recent: deque[Observation] = deque()  # for stillness
         self._still_rows: list[float] = []  # bottom edges during the current still spell
         self._still_start: float | None = None
         self._still_last: float | None = None
+        self._outliers = 0  # consecutive frames off the current still spell
         self._hold_reported = False
         self._state = "idle"
         self._samples: list[tuple[float, float]] = []  # (t, bottom row) this drop
@@ -212,13 +218,27 @@ class Measurer:
     # --- public ----------------------------------------------------------------------
 
     @property
+    def taking_holds(self) -> bool:
+        """True while a still ball counts as a calibration hold."""
+        return self._calibrating()
+
+    @property
     def radius(self) -> float | None:
         return statistics.median(self._radii) if len(self._radii) >= 3 else None
 
     def reset_calibration(self) -> None:
-        """Start the calibration holds over (live mode, key R)."""
+        """Start the calibration holds over (live mode: Recalibrate). Drops already
+        measured keep their calibration; later ones use the new holds."""
         self.holds.clear()
         self.calibration = None
+        self._holds_open = True
+
+    def discard(self, seq: int) -> bool:
+        """Forget a drop (live mode: Undo), so it doesn't sway the end-of-session refinement."""
+        before = len(self.drops)
+        self.drops = [d for d in self.drops if d.seq != seq]
+        self._drop_cal.pop(seq, None)
+        return len(self.drops) < before
 
     def feed(self, t: float, obs: Observation | None) -> list:
         events: list = []
@@ -250,18 +270,31 @@ class Measurer:
         """Anchor the drop-height row on the median release instead of one hold.
 
         Every release is meant to be at the mark, so their median is a better
-        estimate of where the mark is than the single calibration hold.
+        estimate of where the mark is than the single calibration hold. Done
+        separately for each calibration the session used.
         """
-        cal = self.calibration
-        if cal is None or len(self.drops) < 2:
+        refined: dict[Calibration, Calibration] = {}
+        for cal in {c for c in self._drop_cal.values() if c is not None}:
+            releases = [d.release_row for d in self.drops if self._drop_cal.get(d.seq) == cal]
+            if len(releases) < 2:
+                continue
+            anchor = statistics.median([cal.rows[-1], *releases])
+            new = fit_calibration([*cal.rows[:-1], anchor], list(cal.heights_cm))
+            if new is not None:
+                refined[cal] = new
+        if not refined:
             return []
-        anchor = statistics.median([cal.rows[-1]] + [d.release_row for d in self.drops])
-        new = fit_calibration([*cal.rows[:-1], anchor], list(cal.heights_cm))
-        if new is None:
-            return []
-        self.calibration = new
-        self.drops = [self._recompute(d, new) for d in self.drops]
-        return [RefinedEvent(new, tuple(self.drops))]
+        drops = []
+        for d in self.drops:
+            new = refined.get(self._drop_cal.get(d.seq))
+            if new is not None:
+                d = self._recompute(d, new)
+                self._drop_cal[d.seq] = new
+            drops.append(d)
+        self.drops = drops
+        if self.calibration in refined:
+            self.calibration = refined[self.calibration]
+        return [RefinedEvent(self.calibration, tuple(self.drops))]
 
     def _recompute(self, d: Drop, cal: Calibration) -> Drop:
         release_cm = cal.height_cm(d.release_row)
@@ -288,26 +321,39 @@ class Measurer:
     # --- stillness and calibration holds ---------------------------------------------
 
     def _update_still(self, obs: Observation, radius: float) -> bool:
+        """Is the ball at rest? Starting a still spell needs a steady stretch of
+        ``still_s``; continuing one only needs the ball to stay near where it rests,
+        so a dropped frame can't break a hold. Nor can a frame or two that strays
+        and comes back: compressed video stores colour at half resolution, which
+        makes a colour edge jump by about a pixel now and then."""
         self._recent.append(obs)
         while self._recent and obs.t - self._recent[0].t > self.s.still_s:
             self._recent.popleft()
-        span = obs.t - self._recent[0].t
-        rows = [o.bottom for o in self._recent]
         tol = max(1.0, self.s.still_tol_r * radius)
-        # Starting a still spell needs enough time seen; continuing one only needs
-        # the ball not to move, so a dropped frame can't break a hold.
-        enough = self._still_start is not None or (
-            len(self._recent) >= 3 and span >= 0.7 * self.s.still_s
-        )
-        still = enough and len(self._recent) >= 2 and max(rows) - min(rows) <= tol
-        if still:
-            if self._still_start is None:
-                self._still_start = self._recent[0].t
-                self._still_rows = [o.bottom for o in self._recent]
-            else:
+        if self._still_start is not None:
+            if abs(obs.bottom - statistics.median(self._still_rows[-30:])) <= tol:
                 self._still_rows.append(obs.bottom)
-            self._still_last = obs.t
-        return still
+                self._still_last = obs.t
+                self._outliers = 0
+                return True
+            self._outliers += 1
+            return self._outliers <= self.s.still_outliers
+        if len(self._recent) < 3 or obs.t - self._recent[0].t < 0.7 * self.s.still_s:
+            return False
+        # Steady apart from at most a quarter of the frames, up to still_outliers.
+        rows = sorted(o.bottom for o in self._recent)
+        k = min(self.s.still_outliers, len(rows) // 4)
+        n = len(rows) - k
+        lo = min(range(k + 1), key=lambda i: rows[i + n - 1] - rows[i])
+        if rows[lo + n - 1] - rows[lo] > tol:
+            return False
+        lo_row, hi_row = rows[lo], rows[lo + n - 1]
+        steady = [o for o in self._recent if lo_row <= o.bottom <= hi_row]
+        self._still_start = self._recent[0].t
+        self._still_rows = [o.bottom for o in steady]
+        self._still_last = steady[-1].t
+        self._outliers = 0
+        return True
 
     def _update_holds(self, t: float, still: bool, events: list) -> None:
         if still:
@@ -333,7 +379,7 @@ class Measurer:
         self._hold_reported = False
 
     def _calibrating(self) -> bool:
-        return self.calibration is None and not self.drops
+        return self.calibration is None and self._holds_open
 
     def _try_calibrate(self, events: list) -> None:
         """Use the latest holds once they run floor -> (mid) -> drop height."""
@@ -375,15 +421,22 @@ class Measurer:
         s = self.s
         if self._state in ("idle", "armed"):
             if still:
+                assert self._still_last is not None
                 self._state = "armed"
-                self._rest = (t, statistics.median(self._still_rows[-15:]))
-            elif self._state == "armed" and self._rest is not None:
-                if row - self._rest[1] > s.fall_start_r * radius:
-                    self._state = "falling"
-                    self._samples = [(t, row)]
-                    self._extreme = (t, row)
-                elif t - self._rest[0] > 1.0:
-                    self._state = "idle"  # moved, but not a fall: carried somewhere
+                self._rest = (self._still_last, statistics.median(self._still_rows[-15:]))
+            rest = self._rest
+            if self._state != "armed" or rest is None:
+                return
+            # Checked even while "still": a frame or two off the rest level are
+            # allowed in a still spell, and the first of a fall may be among them.
+            if row - rest[1] > s.fall_start_r * radius:
+                if self._still_start is not None:
+                    self._end_still(events)
+                self._state = "falling"
+                self._samples = [(t, row)]
+                self._extreme = (t, row)
+            elif not still and t - rest[0] > 1.0:
+                self._state = "idle"  # moved, but not a fall: carried somewhere
             return
 
         if self._samples and t - self._samples[-1][0] > s.max_gap_s:
@@ -418,6 +471,9 @@ class Measurer:
         self._reset_drop()
         if drop is not None:
             self.drops.append(drop)
+            self._drop_cal[drop.seq] = self.calibration
+            self._next_seq += 1
+            self._holds_open = False  # once dropping, a still ball is a release, not a hold
             events.append(DropEvent(drop))
 
     def _apex_points(
@@ -546,7 +602,7 @@ class Measurer:
             warnings.append(f"rebound is {rebound / h:.0%} of the drop height: check this drop")
 
         return Drop(
-            seq=len(self.drops),
+            seq=self._next_seq,
             t_release=t_rel,
             t_impact=t_floor,
             t_apex=t_apex,

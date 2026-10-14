@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en" data-pi-url="{{ pi_url }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bounce video</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='video.css') }}">
+</head>
+<body>
+  <header class="top">
+    <h1>Bounce video</h1>
+    <div class="top-right">
+      <span id="pi-status" class="pill">Pi: checking…</span>
+      <button id="pi-retry" class="link" type="button" hidden>Retry</button>
+      <div class="seg" role="group" aria-label="Length units">
+        <button type="button" data-units="in">in</button>
+        <button type="button" data-units="cm">cm</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Left: set-up and sources, live controls, or the review summary. -->
+    <aside class="side">
+      <section id="setup-card" class="card">
+        <h2>1. Set up</h2>
+        <div id="pi-fields">
+          <label>Batch
+            <select id="batch"></select>
+          </label>
+          <label>Setup
+            <select id="setup"></select>
+          </label>
+          <label>Test
+            <select id="context"></select>
+          </label>
+        </div>
+        <div id="manual-fields" hidden>
+          <p class="muted small">The Pi isn't reachable: enter the drop height to measure anyway.
+            Saving needs the Pi.</p>
+          <label>Drop height <span class="unit-label"></span>
+            <input id="drop-height" type="number" step="0.1" min="0" inputmode="decimal">
+          </label>
+        </div>
+        <div class="row2">
+          <label>Mid mark <span class="unit-label"></span>
+            <input id="mid-mark" type="number" step="0.1" min="0" inputmode="decimal">
+          </label>
+          <label>Drops per ball
+            <input id="drops-per-ball" type="number" min="1" max="20" step="1" value="3">
+          </label>
+        </div>
+        <p id="setup-note" class="muted small"></p>
+        <p id="setup-error" class="error small" hidden></p>
+      </section>
+
+      <section id="source-card" class="card">
+        <h2>2. Source</h2>
+        <h3>Webcam</h3>
+        <div id="cameras" class="cameras"><p class="muted small">Looking for cameras…</p></div>
+        <button id="cameras-refresh" class="link small" type="button">Look again</button>
+        <h3>Phone clip</h3>
+        <label id="dropzone" class="dropzone">
+          <input id="clip-file" type="file" accept="video/*" hidden>
+          <span>Drop a clip here, or <u>choose a file</u></span>
+        </label>
+        <div id="upload" hidden>
+          <progress id="upload-bar" max="1" value="0"></progress>
+          <span id="upload-text" class="small muted"></span>
+        </div>
+      </section>
+
+      <section id="live-card" class="card" hidden>
+        <div id="prompt" class="prompt">
+          <div id="prompt-text" class="prompt-text"></div>
+          <div id="prompt-detail" class="prompt-detail"></div>
+          <div id="prompt-warn" class="warn" hidden></div>
+        </div>
+        <div id="live-status" class="status small"></div>
+        <div id="framing-actions" class="actions">
+          <button id="start" class="primary" type="button">Start session</button>
+          <button id="close-camera" type="button">Close camera</button>
+        </div>
+        <div id="live-actions" class="actions" hidden>
+          <button data-cmd="undo" type="button" title="U">Undo last drop</button>
+          <button data-cmd="next_ball" type="button" title="N">Next ball</button>
+          <button data-cmd="recalibrate" type="button" title="R">Recalibrate</button>
+          <button data-cmd="finish" class="primary" type="button" title="F">Finish</button>
+        </div>
+        <div id="analysing" hidden>
+          <progress id="analyse-bar" max="1" value="0"></progress>
+          <span id="analyse-text" class="small muted"></span>
+          <div class="actions"><button id="cancel" type="button">Cancel</button></div>
+        </div>
+        <p class="muted small" id="pick-hint">Click the ball in the picture to teach the app its
+          colour if it isn't outlined.</p>
+        <table id="live-drops" class="drops">
+          <thead><tr><th>Ball</th><th>Drop</th><th class="num">Rebound</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="provisional" class="muted small" hidden>Heights are provisional until Finish, when
+          the drop mark is re-anchored on all releases.</p>
+      </section>
+
+      <section id="review-card" class="card" hidden>
+        <h2>Review</h2>
+        <p id="review-what" class="small muted"></p>
+        <table id="medians" class="drops">
+          <thead><tr><th>Ball</th><th class="num">Median</th><th class="num">Drops</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="review-mean" class="mean"></p>
+        <div class="actions column">
+          <button id="save-pi" class="primary" type="button" disabled
+            title="Saving to the Pi comes in a later step">Save to Pi</button>
+          <a id="download" class="button" href="/api/review.json" download>Download JSON</a>
+          <button id="reanalyse-open" type="button">Analyse again…</button>
+          <button id="new-session" type="button">New session</button>
+        </div>
+        <p class="muted small">Saving to the Pi comes in a later step; download the review as
+          JSON meanwhile.</p>
+      </section>
+
+      <section id="error-card" class="card" hidden>
+        <h2>Something went wrong</h2>
+        <p id="error-text" class="error"></p>
+        <div class="actions">
+          <button id="error-reanalyse" type="button" hidden>Analyse again…</button>
+          <button id="error-back" type="button">Start over</button>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Right: the preview, or the review table. -->
+    <section class="stage">
+      <div id="notice" class="notice" hidden></div>
+      <div id="preview-wrap" class="preview-wrap">
+        <img id="preview" alt="Camera preview: click the ball to teach its colour" hidden>
+        <div id="placeholder" class="placeholder">
+          <p>Pick a webcam or drop a phone clip on the left.</p>
+          <p class="muted small">Set up: camera steady 2–3 m from the drop line, the whole drop and
+            the floor in view. Start with three holds: the ball still on the floor, at the mid
+            mark, at the drop mark. Then drop each ball in number order and catch it after its
+            first bounce.</p>
+        </div>
+      </div>
+      <div id="review-wrap" hidden>
+        <table id="review" class="review">
+          <thead>
+            <tr><th>Picture</th><th>Ball</th><th class="num">Measured</th><th>Height</th>
+              <th>Keep</th><th>Warnings</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="reanalyse">
+    <form method="dialog">
+      <h2>Analyse again</h2>
+      <p class="small muted">Find a frame where the ball is clear, then click it to teach the app
+        its colour. Review edits are lost.</p>
+      <div class="frame-wrap"><img id="frame" alt="A frame of the video"><span id="frame-mark"
+          class="mark" hidden></span></div>
+      <input id="frame-t" type="range" min="0" step="0.1" value="0">
+      <span id="frame-time" class="small muted"></span>
+      <div class="actions">
+        <button id="reanalyse-pick" class="primary" type="button" disabled>With the clicked
+          colour</button>
+        <button id="reanalyse-default" type="button">With the default colour</button>
+        <button value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="picture">
+    <form method="dialog">
+      <img id="picture-img" alt="The drop">
+      <div class="actions"><button value="close">Close</button></div>
+    </form>
+  </dialog>
+
+  <footer class="foot muted small">canister-video {{ version }} · on this laptop only</footer>
+  <script src="{{ url_for('static', filename='video.js') }}"></script>
+</body>
+</html>

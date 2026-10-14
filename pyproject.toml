@@ -24,7 +24,12 @@ video = ["opencv-python>=4.8", "numpy>=1.26"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-canister_monitor = ["web/templates/*.html", "web/static/**/*"]
+canister_monitor = [
+    "web/templates/*.html",
+    "web/static/**/*",
+    "video/templates/*.html",
+    "video/static/*",
+]
 
 [tool.ruff]
 line-length = 100

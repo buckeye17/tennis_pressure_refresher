@@ -1,0 +1,373 @@
+"""The laptop web app for video bounce tests (PLAN.md 6.3), through Flask's test client
+with a synthetic camera standing in for a webcam. Needs the laptop-only ``video``
+extra; skipped where OpenCV isn't installed (e.g. on the Pi)."""
+
+import json
+import statistics
+import time
+
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+
+from canister_monitor.video import synth  # noqa: E402
+from canister_monitor.video.app import create_app  # noqa: E402
+from canister_monitor.video.measure import Measurer, Observation  # noqa: E402
+from canister_monitor.video.pi import PiClient, PiError  # noqa: E402
+from canister_monitor.video.session import Params, ReviewDrop  # noqa: E402
+
+H = 182.88  # 72 in
+MID = 91.44  # 36 in
+SMALL = {"width": 360, "height": 640}
+
+PARAMS = {
+    "drop_height_cm": H,
+    "mid_mark_cm": MID,
+    "drops_per_ball": 2,
+    "batch_id": 7,
+    "batch_label": "Penn Championship",
+    "sample_size": 2,
+    "setup_id": 1,
+    "setup_name": "Garage door",
+    "context": "before",
+}
+
+
+class FakePi:
+    base_url = "http://pi.test:5000"
+
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok
+
+    def bounce(self) -> dict:
+        if not self.ok:
+            raise PiError("can't reach http://pi.test:5000: refused")
+        return {
+            "settings": {"display_units": "in", "contexts": ["new", "before", "after"]},
+            "setups": [{"id": 1, "name": "Garage door", "drop_cm": H, "is_itf": False}],
+            "batches": [
+                {
+                    "id": 7,
+                    "brand": "Penn",
+                    "model": "Championship",
+                    "opened_ts": 1.7e9,
+                    "sample_size": 2,
+                    "retired_ts": None,
+                    "location": {"in_canister": True, "mac": "x"},
+                    "tests": [{}],
+                },
+                {"id": 8, "brand": "Old", "model": "Box", "opened_ts": 1.6e9, "sample_size": 3}
+                | {"retired_ts": 1.65e9, "location": None, "tests": []},
+            ],
+        }
+
+
+def corrected(truth_drop: dict) -> float:
+    return truth_drop["rebound_cm"] * H / truth_drop["release_cm"]
+
+
+def make_client(tmp_path, cameras: dict | None = None, pi=None):
+    cameras = cameras or {}
+
+    def open_camera(key):
+        if key not in cameras:
+            raise ValueError(f"no camera {key!r}")
+        return cameras[key]()
+
+    def probe():
+        return [{"key": k, "label": k, "width": 360, "height": 640, "fps": 30.0} for k in cameras]
+
+    app = create_app(tmp_path / "recordings", pi or FakePi(), open_camera, probe)
+    return app, app.test_client()
+
+
+def wait_for(client, predicate, timeout=90.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        st = client.get("/api/state").get_json()
+        if predicate(st):
+            return st
+        if st["phase"] == "error":
+            raise AssertionError(st["error"])
+        time.sleep(0.02)
+    raise AssertionError(f"timed out; last state: {json.dumps(st)[:2000]}")
+
+
+def first_mjpeg_frame(client, session) -> bytes:
+    resp = client.get(f"/preview.mjpg?session={session}", buffered=False)
+    assert resp.mimetype == "multipart/x-mixed-replace"
+    chunk = next(iter(resp.response))
+    resp.close()
+    return chunk
+
+
+# --- set-up and review, without threads ----------------------------------------------
+
+
+def test_params_validation():
+    p = Params.from_json(PARAMS)
+    assert p.drops_per_ball == 2 and p.batch_id == 7
+    assert Params.from_json({"drop_height_cm": 100}).drops_per_ball == 3
+    for bad, msg in [
+        ({}, "drop_height_cm"),
+        ({"drop_height_cm": 100, "mid_mark_cm": 120}, "mid mark"),
+        ({"drop_height_cm": 100, "drops_per_ball": 0}, "drops_per_ball"),
+        ({"drop_height_cm": 100, "colour": "x"}, "unknown"),
+        ({"drop_height_cm": True}, "drop_height_cm"),
+    ]:
+        with pytest.raises(ValueError, match=msg):
+            Params.from_json(bad)
+
+
+def test_review_drop_height_prefers_the_edit():
+    d = ReviewDrop(0, 1, 100.0)
+    assert d.height_cm == 100.0
+    d.edited_cm = 98.0
+    assert d.height_cm == 98.0
+
+
+def test_pi_states(tmp_path):
+    _, client = make_client(tmp_path)
+    pi = client.get("/api/pi").get_json()
+    assert pi["ok"] and [b["id"] for b in pi["batches"]] == [7]  # the retired batch is left out
+    assert pi["batches"][0] == {
+        "id": 7,
+        "brand": "Penn",
+        "model": "Championship",
+        "opened_ts": 1.7e9,
+        "sample_size": 2,
+        "tests": 1,
+        "in_canister": True,
+    }
+    _, client = make_client(tmp_path, pi=FakePi(ok=False))
+    pi = client.get("/api/pi").get_json()
+    assert not pi["ok"] and "refused" in pi["error"]
+
+
+def test_pi_client_reports_an_unreachable_pi():
+    with pytest.raises(PiError, match="can't reach"):
+        PiClient("http://127.0.0.1:9", timeout=1.0).bounce()
+
+
+def test_page_and_idle_state(tmp_path):
+    _, client = make_client(tmp_path)
+    page = client.get("/")
+    assert page.status_code == 200 and b"Bounce video" in page.data
+    assert client.get("/static/video.js").status_code == 200
+    assert client.get("/api/state").get_json() == {"session": None, "phase": "idle"}
+
+
+# --- a live session through the synthetic camera ------------------------------------------
+
+
+def test_live_session_end_to_end(tmp_path):
+    cam = synth.Camera.framing(H, 8.0, **SMALL)
+    spec = synth.SessionSpec(cor=(0.74, 0.70), drops_per_ball=2, seed=5)
+    made: list[synth.SyntheticCamera] = []
+
+    def camera():
+        made.append(synth.SyntheticCamera(cam, spec, speed=8.0))
+        return made[-1]
+
+    _, client = make_client(tmp_path, {"synth": camera})
+    assert client.get("/api/cameras").get_json()[0]["key"] == "synth"
+    st = client.post("/api/camera", json={"key": "synth"}).get_json()
+    assert st["phase"] == "framing" and st["source"]["width"] == 360
+    session = st["session"]
+    assert first_mjpeg_frame(client, session).startswith(b"--frame\r\nContent-Type: image/jpeg")
+
+    # Commands that need a live session are refused while framing.
+    assert client.post("/api/command/undo").status_code == 400
+    bad = dict(PARAMS, mid_mark_cm=500)
+    assert client.post("/api/start", json=bad).status_code == 400
+
+    st = client.post("/api/start", json=PARAMS).get_json()
+    assert st["phase"] == "live" and st["source"]["recording"].endswith(".mp4")
+    assert st["prompt"]["text"] == "Hold the ball still on the floor"
+
+    st = wait_for(client, lambda s: s["calibration"] is not None)
+    assert st["calibration"]["method"] == "projective"
+    st = wait_for(client, lambda s: len(s["drops"]) == 3)
+    assert [d["ball_no"] for d in st["drops"]] == [1, 1, 2]
+    st = client.post("/api/command/undo").get_json()  # ball 2's first drop was fumbled
+    assert len(st["drops"]) == 2 and st["prompt"]["text"] == "Ball 2, drop 1"
+    st = wait_for(client, lambda s: len(s["drops"]) == 3)
+    st = client.post("/api/command/finish").get_json()
+    assert st["phase"] == "review"
+    assert client.post("/api/command/undo").status_code == 409  # the session has ended
+
+    truth = made[0].truth.drops
+    rev = st["review"]
+    assert [d["ball_no"] for d in rev["drops"]] == [1, 1, 2]
+    assert [d["seq"] for d in rev["drops"]] == [0, 1, 3]
+    for d, t in zip(rev["drops"], [truth[0], truth[1], truth[3]], strict=True):
+        assert d["measured_cm"] == pytest.approx(corrected(t), rel=0.005)
+        assert d["image"]
+    img = client.get("/api/drops/0.jpg")
+    assert img.mimetype == "image/jpeg" and img.data[:2] == b"\xff\xd8"
+
+    # Review edits: type over one height, reject one drop, move one to another ball.
+    assert client.post("/api/review/0", json={"edited_cm": 999}).status_code == 400
+    client.post("/api/review/0", json={"edited_cm": 100.0})
+    client.post("/api/review/1", json={"kept": False})
+    st = client.post("/api/review/3", json={"ball_no": 3}).get_json()
+    rev = st["review"]
+    assert rev["drops"][0]["height_cm"] == 100.0 and rev["drops"][0]["edited_cm"] == 100.0
+    assert [(m["ball_no"], m["drops"]) for m in rev["summary"]["medians"]] == [(1, 1), (3, 1)]
+    assert rev["summary"]["medians"][0]["rebound_cm"] == 100.0
+    assert client.post("/api/review/42", json={"kept": False}).status_code == 404
+
+    doc = json.loads(client.get("/api/review.json").data)
+    assert doc["test"]["batch_id"] == 7 and doc["test"]["source"] == "video"
+    assert doc["test"]["drops"] == [
+        {"ball_no": 1, "rebound_cm": 100.0},
+        {"ball_no": 3, "rebound_cm": rev["drops"][2]["measured_cm"]},
+    ]
+    assert [(d["seq"], d["kept"], d["edited_cm"]) for d in doc["drops"]] == [
+        (0, True, 100.0),
+        (1, False, None),
+        (3, True, None),
+    ]
+    assert doc["drops"][0]["detail"]["rows"]["apex"] > 0
+    assert len(doc["drops"][0]["image_jpeg"]) > 1000
+    assert doc["analysis"]["video"]["calibration"]["method"] == "projective"
+    assert doc["analysis"]["filename"] == st["file"]
+
+    # The recording, with its capture times, re-analyses as a clip: all four drops.
+    rec = tmp_path / "recordings" / st["file"]
+    assert rec.stat().st_size > 10_000
+    assert rec.with_suffix(".times.txt").is_file()
+    st = client.post("/api/reanalyse", json={"pick": None}).get_json()
+    assert st["phase"] == "analysing" and st["session"] != session
+    st = wait_for(client, lambda s: s["phase"] == "review")
+    drops = st["review"]["drops"]
+    assert [d["ball_no"] for d in drops] == [1, 1, 2, 2]
+    for d, t in zip(drops, truth, strict=True):
+        assert d["measured_cm"] == pytest.approx(corrected(t), rel=0.005)
+
+
+def test_pick_and_recalibrate_and_close(tmp_path):
+    cam = synth.Camera.framing(H, **SMALL)
+    spec = synth.SessionSpec(cor=(0.74,), drops_per_ball=1)
+    _, client = make_client(tmp_path, {"s": lambda: synth.SyntheticCamera(cam, spec, speed=2.0)})
+    st = client.post("/api/camera", json={"key": "s"}).get_json()
+    first_mjpeg_frame(client, st["session"])
+    assert client.post("/api/pick", json={"x": 2, "y": 0.5}).status_code == 400
+    st = client.post("/api/pick", json={"x": 0.5, "y": 0.5}).get_json()
+    assert st["color_picked"]
+    client.post("/api/start", json=dict(PARAMS, drops_per_ball=1))
+    st = client.post("/api/command/recalibrate").get_json()
+    assert st["phase"] == "live" and st["calibration"] is None
+    assert client.get(f"/preview.mjpg?session={st['session'] + 1}").status_code == 404
+    st = client.post("/api/close").get_json()
+    assert st == {"session": None, "phase": "idle"}
+    assert client.post("/api/command/finish").status_code == 404
+
+
+def test_camera_that_fails_to_open(tmp_path):
+    _, client = make_client(tmp_path)
+    resp = client.post("/api/camera", json={"key": "3"})
+    assert resp.status_code == 400 and "no camera" in resp.get_json()["error"]
+
+
+# --- clips ------------------------------------------------------------------------------------
+
+
+def test_clip_upload_and_analysis(tmp_path):
+    cam = synth.Camera.framing(H, 10.0, **SMALL)
+    spec = synth.SessionSpec(cor=(0.73,), drops_per_ball=2, distractor=False)
+    clip = tmp_path / "phone.mp4"
+    truth = synth.write_clip(clip, cam, spec)
+    _, client = make_client(tmp_path)
+
+    up = client.post("/api/upload?name=../My Clip.mp4", data=clip.read_bytes())
+    assert up.status_code == 201
+    name = up.get_json()["file"]
+    assert name.endswith("-My_Clip.mp4") and "/" not in name
+    assert (
+        client.post("/api/clip", json={"file": "../phone.mp4", "params": PARAMS}).status_code == 400
+    )
+    assert client.post("/api/clip", json={"file": "nope.mp4", "params": PARAMS}).status_code == 404
+
+    st = client.post("/api/clip", json={"file": name, "params": dict(PARAMS, drops_per_ball=2)})
+    assert st.get_json()["phase"] == "analysing"
+    st = wait_for(client, lambda s: s["phase"] == "review")
+    drops = st["review"]["drops"]
+    assert len(drops) == 2
+    for d, t in zip(drops, truth.drops, strict=True):
+        assert d["measured_cm"] == pytest.approx(corrected(t), rel=0.005)
+
+    frame = client.get("/api/frame.jpg?t=1.0")
+    assert frame.mimetype == "image/jpeg"
+    # Analyse again with the colour clicked on a frame where the ball rests on the floor.
+    t = 2.5
+    u, v, _ = cam.project(0.0, synth.BALL_RADIUS_M)
+    pick = {"t": t, "x": u / cam.width, "y": v / cam.height}
+    st = client.post("/api/reanalyse", json={"pick": pick}).get_json()
+    assert st["color_picked"]
+    st = wait_for(client, lambda s: s["phase"] == "review")
+    assert len(st["review"]["drops"]) == 2
+
+
+def test_not_a_video(tmp_path):
+    _, client = make_client(tmp_path)
+    name = client.post("/api/upload?name=notes.txt", data=b"hello").get_json()["file"]
+    client.post("/api/clip", json={"file": name, "params": PARAMS})
+    end = time.monotonic() + 10
+    while (st := client.get("/api/state").get_json())["phase"] == "analysing":
+        assert time.monotonic() < end
+        time.sleep(0.02)
+    assert st["phase"] == "error" and st["error"] == f"can't open {name} as a video"
+    assert client.post("/api/upload?name=empty.mp4", data=b"").status_code == 400
+
+
+# --- recalibrating part way (the measurer) -------------------------------------------------
+
+
+def observations(cam, spec, t0=0.0, fps=30.0):
+    tr, truth = synth.build(spec, cam)
+    out = []
+    for i in range(int(tr.end * fps)):
+        t = i / fps
+        x, y, _ = tr.at(t)
+        u, v, ppm = cam.project(x, y + synth.BALL_RADIUS_M)
+        r = synth.BALL_RADIUS_M * ppm
+        seen = 0 <= u <= cam.width
+        out.append((t0 + t, Observation(t0 + t, u, v, 2 * r, 2 * r, v + r) if seen else None))
+    return out, truth
+
+
+def test_recalibrating_after_the_camera_moved():
+    """Drops keep the calibration they were measured with; each is refined on its own."""
+    spec = synth.SessionSpec(release_sd_cm=1.5, cor=(0.75,), drops_per_ball=3, seed=2)
+    before, truth_a = observations(synth.Camera.framing(H, 0.0), spec)
+    after, truth_b = observations(synth.Camera.framing(H, 12.0), spec, t0=before[-1][0] + 1)
+    m = Measurer(H, MID)
+    for t, o in before:
+        m.feed(t, o)
+    first = m.calibration
+    m.reset_calibration()
+    for t, o in after:
+        m.feed(t, o)
+    events = m.finish()
+    assert m.calibration is not None and m.calibration.p != first.p
+    assert type(events[-1]).__name__ == "RefinedEvent"
+    assert len(m.drops) == 6
+    for drops, truth in ((m.drops[:3], truth_a), (m.drops[3:], truth_b)):
+        releases = [t["release_cm"] for t in truth.drops]
+        typical = statistics.median([releases[0], *releases])
+        for d, t in zip(drops, truth.drops, strict=True):
+            assert d.rebound_cm == pytest.approx(
+                t["rebound_cm"] * typical / t["release_cm"], rel=0.003
+            )
+
+
+def test_undone_drop_leaves_the_refinement():
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, _ = observations(synth.Camera.framing(H), spec)
+    m = Measurer(H, MID)
+    for t, o in obs:
+        m.feed(t, o)
+    assert m.discard(1) and not m.discard(1)
+    m.finish()
+    assert [d.seq for d in m.drops] == [0, 2]

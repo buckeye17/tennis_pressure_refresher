@@ -37,16 +37,25 @@ class VideoInfo:
     frames: int  # 0 if unknown (camera)
 
 
+def times_path(path: Path) -> Path:
+    """The capture times saved beside a live recording: one per frame, in seconds."""
+    return path.with_suffix(".times.txt")
+
+
 def open_clip(path: Path) -> tuple[VideoInfo, Iterator[tuple[float, np.ndarray]]]:
     """Frames of a video file with their timestamps (seconds).
 
     Phone clips often have a variable frame rate, so each frame's own timestamp
-    is used; the nominal rate is only the fallback.
+    is used; the nominal rate is only the fallback. A live recording's capture
+    times, if saved beside it, take precedence: the file itself has a fixed rate.
     """
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise ValueError(f"can't open {path} as a video")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    saved: list[float] = []
+    if times_path(path).is_file():
+        saved = [float(x) for x in times_path(path).read_text().split()]
     info = VideoInfo(
         source="file",
         name=str(path),
@@ -63,7 +72,7 @@ def open_clip(path: Path) -> tuple[VideoInfo, Iterator[tuple[float, np.ndarray]]
                 ok, frame = cap.read()
                 if not ok:
                     return
-                t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                t = saved[i] if i < len(saved) else cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
                 if not t > last:  # missing or not increasing: fall back to the frame count
                     t = i / fps if i / fps > last else last + 1 / fps
                 last = t
@@ -195,7 +204,18 @@ class Analyzer:
         self.result.entries = list(self.session.entries)
         if undone is not None:
             self.result.images.pop(undone[1].seq, None)
+            self.measurer.discard(undone[1].seq)
         return undone
+
+    def skip_ball(self) -> None:
+        """On to the next ball before this one has all its drops."""
+        self.session.skip_ball()
+
+    def recalibrate(self) -> None:
+        """Start the calibration holds over; drops so far keep theirs."""
+        self.measurer.reset_calibration()
+        self.result.calibration = None
+        self.result.holds = []
 
     def drop_image(self, drop: Drop, ball: int) -> np.ndarray | None:
         """The frame nearest the apex, cropped to the drop with its lines drawn."""

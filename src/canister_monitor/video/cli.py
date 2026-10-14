@@ -1,13 +1,13 @@
-"""canister-video: measure bounce-test drops from a video (PLAN.md section 6.3).
+"""canister-video: measure bounce-test drops from video (PLAN.md section 6.3).
 
+    canister-video                 the laptop web app: webcam or phone clip,
+                                   review, then the test for the Pi
     canister-video CLIP --drop-height 72in --mid-mark 36in --dry-run
+                                   measure a clip and print the drops
 
-Start the clip with the three calibration holds (ball still for ~2 s on the
-floor, at the mid mark, at the drop mark), then drop each numbered ball in
+Start each session with the three calibration holds (ball still for ~2 s on
+the floor, at the mid mark, at the drop mark), then drop each numbered ball in
 order, the same number of times, catching it after its first bounce.
-
-Uploading to the Pi and live webcams come in later steps; for now this
-prints the drops it measured.
 """
 
 import argparse
@@ -140,8 +140,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="canister-video", description=__doc__, formatter_class=argparse.RawTextHelpFormatter
     )
-    ap.add_argument("clip", type=Path, help="video file of a bounce test")
-    ap.add_argument("--drop-height", type=parse_length, required=True, help="e.g. 72in")
+    ap.add_argument(
+        "clip", type=Path, nargs="?", help="video file of a bounce test; without one, the app"
+    )
+    ap.add_argument("--drop-height", type=parse_length, help="e.g. 72in (required with CLIP)")
     ap.add_argument("--mid-mark", type=parse_length, help="calibration mark between, e.g. 36in")
     ap.add_argument("--drops-per-ball", type=int, default=3)
     ap.add_argument("--pick", action="store_true", help="click the ball to teach its colour")
@@ -152,8 +154,31 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--dry-run", action="store_true", help="don't upload (uploading isn't built yet)"
     )
+    app = ap.add_argument_group("the web app (no CLIP)")
+    app.add_argument("--port", type=int, default=5100, help="default 5100, on this laptop only")
+    app.add_argument(
+        "--pi", default="http://canisters.local:5000", help="the Pi (default %(default)s)"
+    )
+    app.add_argument("--no-browser", action="store_true", help="don't open the browser")
+    app.add_argument(
+        "--recordings",
+        type=Path,
+        default=Path("recordings"),
+        help="where clips and live sessions are kept (default ./recordings)",
+    )
+    app.add_argument(
+        "--demo-camera",
+        action="store_true",
+        help="offer a synthetic camera filming a made-up session (no webcam needed)",
+    )
     args = ap.parse_args(argv)
 
+    if args.clip is None:
+        from canister_monitor.video.app import serve
+
+        return serve(args.port, args.pi, args.recordings, not args.no_browser, args.demo_camera)
+    if args.drop_height is None:
+        ap.error("--drop-height is required with a clip")
     if not args.clip.is_file():
         ap.error(f"{args.clip} not found")
     if args.mid_mark is not None and not 0 < args.mid_mark < args.drop_height:

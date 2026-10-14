@@ -321,7 +321,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - Finished tests go to the Pi through its API.
 
 **Camera placement (both modes).**
-- Steady, at least 2–3 m from the drop line, framing the whole drop height and the floor, with the drop path near the middle of the frame. Bright light (less blur at impact); a background that isn't yellow helps.
+- Steady, at least 2–3 m from the drop line, framing the whole drop height and the floor, with the drop path near the middle of the frame. Bright light (less blur at impact); a background that isn't yellow helps, and one darker than the ball is better still: video files store colour at half resolution, which blurs an edge that differs from its background mostly in colour (see 8b.2 step 2).
 - A webcam is landscape. To cover a 6 ft drop it needs about 3 m of distance with the camera about 1 m up; a 100 in drop needs about 4 m with the camera about 1.3 m up.
 - A phone: portrait, 1× lens (not the ultrawide), 1080p, 60 fps if available. Slow motion works but isn't needed.
 - Tilt is corrected by the height calibration below, so a laptop screen leaning back is fine.
@@ -345,7 +345,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
   - Buttons: **Undo** last drop, **Next ball**, **Recalibrate**, **Finish**. Clicking the ball in the preview teaches its colour, like `--pick`.
   - The app asks the camera for 1280×720 at 60 fps and shows the rate it actually gets. It warns below 25 fps: webcams slow down in dim light, which also blurs the ball.
   - Timestamps come from the capture clock, so a dropped frame doesn't distort the fits.
-  - The session is also recorded to `recordings/<time>.mp4` (git-ignored), so it can be re-analysed as a clip. Expect about 100 MB for 3 minutes at 720p.
+  - The session is also recorded to `recordings/<time>.mp4` (git-ignored), with each frame's capture time in `<time>.times.txt`, so it can be re-analysed as a clip with its true timing. Expect about 100 MB for 3 minutes at 720p.
 - **3b. Clip.** The clip is uploaded to the local server, kept in `recordings/`, and analysed with a progress bar, usually in seconds.
 - **4. Review**, on the laptop: one row per drop with its picture and any warnings.
   - Each drop can be moved to another ball, rejected, or its height typed over (it is then marked as edited).
@@ -874,10 +874,37 @@ Next, in order. Data collection comes first because it takes the longest:
      - `tests/test_video.py` (19 tests, skipped without OpenCV) covers: calibration maths; the state machine on exact positions (level and 15° tilt); second bounces ignored; off-mark releases corrected and flagged; the uncalibrated fallback; rendered clips in portrait and landscape with a yellow distractor; the live path with ~6% of frames dropped; the CLI.
      - Results on rendered clips (ball physics with air drag, blur, noise, hand at holds): 10 random setups (tilt −6° to 15°, 30/60 fps, portrait and landscape) found 60/60 drops and calibrated every session. Worst error 0.26% of the rebound at 640 px or more, 0.74% at 640×360 where the ball is only 8 px across (0.19% for the same setup at 1280×720), against the 0.5% target. About 3 ms per frame on the laptop.
      - Without calibration holds, a level camera gives ~0.1%, but 10° of tilt gives ~4.5%, with a warning.
-  2. **The laptop web app** (`video/app.py`): the session worker, camera probing and capture with recording, clip upload with progress, the MJPEG preview, live state and controls, and the review screen.
+  2. *(done)* **The laptop web app** (`video/app.py`): the session worker, camera probing and capture with recording, clip upload with progress, the MJPEG preview, live state and controls, and the review screen.
      - Save to Pi is disabled until step 5; review results can be downloaded as JSON meanwhile.
      - Tests use Flask's test client and a synthetic camera.
+
+     As built:
+     - `canister-video` with no clip serves the app (werkzeug, threaded, `127.0.0.1` only). Flags: `--port`, `--pi`, `--no-browser`, `--recordings DIR`, and `--demo-camera`, which offers a synthetic 720p camera filming a made-up session (3 balls, 3 drops each, 72 in / 36 in), so the app can be tried without a webcam.
+     - `video/session.py`: `Controller` (one session at a time), `LiveRun` and `ClipRun`, `Recorder`, `Review`.
+       - A live session has three threads. One reads the camera and timestamps frames on arrival; it drops frames, and counts them, if analysis falls more than 2 s behind. One analyses, draws the preview (12 fps) and runs the page's commands, so only it touches the analyzer. One writes the recording.
+       - Phases: `framing` (preview only) → `live` (after Start: analysis and recording) → `review`. A clip goes `analysing` → `review`.
+       - Clicking the preview teaches the ball's colour, in framing or live.
+       - The prompt follows the holds: each hold advances it as soon as it's long enough. If holds don't line up, it says so and starts again from the floor.
+       - Warnings: below 25 fps; not calibrated; the floor moved, so recalibrate.
+     - `video/sources.py`: webcams through DirectShow on Windows (asked for MJPG 1280×720 at 60 fps), probed at indices 0–4. `synth.SyntheticCamera` renders a session paced to the wall clock, and its session begins on Start.
+     - `video/pi.py`: `GET /api/bounce` with `urllib`.
+       - The set-up lists active batches and the setups.
+       - The test kind is guessed as on the dashboard.
+       - The mid mark is typed in the app and remembered per setup in the browser until step 4 stores it with the setup.
+       - If the Pi can't be reached, a drop height can be typed instead, so clips can still be measured.
+     - Review: per-drop picture, ball, measured and typed-over height, keep, warnings; per-ball medians and the average update after each edit.
+       - **Analyse again…** re-runs the clip or the live recording, optionally with the colour of a ball clicked on a chosen frame.
+       - **Download JSON** gives the test (`batch_id`, `setup_id`, `context`, `source: video`, kept drops at reviewed heights), the analysis (`filename`, video with calibration, params) and every drop with its detail and JPEG. This is the document Save to Pi will send.
+     - Measurement changes found while building the live mode:
+       - **Recalibrate** works after drops: each drop keeps the calibration it was measured with, and the end-of-session re-anchoring is done per calibration.
+       - **Undo** takes the drop out of the re-anchoring too.
+       - A still spell (hold or rest before a release) tolerates up to 2 frames that stray and come back. This was found on the app's own recordings: OpenCV writes `mp4v`, and like all common codecs (phone H.264/HEVC too) it stores colour at half resolution. The ball's edge against a light grey poster (similar brightness, different colour) jumped ~1.2 px for 1–2 frames at a time, so a 16 px ball lost its mid-mark hold.
+     - Recordings: H.264 isn't available in the pip OpenCV build without the OpenH264 library, so they're `mp4v`. On synthetic clips, re-analysing them adds up to ~0.4% error over the live analysis of raw frames.
+     - `tests/test_video_app.py` (12 tests): a full live session through the synthetic camera (preview stream, holds, drops, undo, finish, review edits, the JSON, re-analysis of the recording), pick and recalibrate, clip upload and analysis with a re-analysis by clicked colour, bad uploads, Pi states, recalibration and undo in the measurer. Plus a compression-jitter test in `tests/test_video.py`.
+     - Checked in the browser with the demo camera: framing, the live prompts and drop list, Undo, Finish, review edits, Analyse again with a clicked colour, and a failed upload. Not yet tried with a real webcam.
   3. Tune on real footage: the user's phone clips in `samples/` and webcam sessions. Record the results in §13.
+     - Also check: real recording sizes (the ~100 MB per 3 minutes estimate), and whether re-analysed recordings stay within 0.5%.
+     - One random synthetic setup (−4° tilt, 60 fps, 720p landscape) reaches 0.60%, with or without the step 2 changes. Look at it here too.
   4. Pi side:
      - migration for the video tables, `bounce_tests.source` and `bounce_setups.mid_mark_cm` (editable in the setup form);
      - an API endpoint that accepts a reviewed video test (the test, analysis details and pictures) in one request, and one that serves drop pictures;

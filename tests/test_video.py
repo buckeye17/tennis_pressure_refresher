@@ -4,6 +4,7 @@ skipped where OpenCV isn't installed (e.g. on the Pi)."""
 import json
 import math
 import statistics
+from dataclasses import replace
 
 import pytest
 
@@ -85,6 +86,31 @@ def test_measurer_on_exact_observations(tilt):
         assert d.rebound_cm == pytest.approx(corrected(t), rel=0.002)
         assert d.floor_cm == pytest.approx(0, abs=1.0)
         assert d.warnings == ()
+
+
+def test_holds_survive_compression_jitter():
+    """Compressed video stores colour at half resolution, so the ball's edge jumps
+    about a pixel for a frame or two now and then (seen on the app's recordings).
+    That mustn't break a calibration hold, even for a small ball."""
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=2)
+    cam = synth.Camera.framing(H, 6.0, **SMALL)  # ~6 px radius: the 1 px tolerance floor
+    obs, truth = observations(cam, spec)
+    jittered, prev = [], None
+    for i, (t, o) in enumerate(obs):
+        if (
+            o is not None
+            and prev is not None
+            and abs(o.bottom - prev.bottom) < 1e-6
+            and i % 8 in (3, 4)
+        ):
+            o = replace(o, bottom=o.bottom + 1.3)
+        jittered.append((t, o))
+        prev = obs[i][1]
+    m, events = run(jittered, spec)
+    assert m.calibration is not None and m.calibration.method == "projective"
+    assert len(m.drops) == 2
+    for d, t in zip(m.drops, truth.drops, strict=True):
+        assert d.rebound_cm == pytest.approx(corrected(t), rel=0.003)
 
 
 def test_second_bounce_is_not_a_drop():

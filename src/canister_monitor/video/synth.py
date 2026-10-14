@@ -12,10 +12,12 @@ then drops in ball order, each caught after its first bounce.
 """
 
 import argparse
+import itertools
 import json
 import math
 import sys
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -282,6 +284,72 @@ def render(
                 cv2.LINE_AA,
             )
         yield t, np.clip(frame, 0, 255).astype(np.uint8)
+
+
+class SyntheticCamera:
+    """A webcam stand-in for the laptop app: renders a session as it happens.
+
+    Frames are paced to the wall clock (``speed`` times real time) and carry
+    their capture time. The made-up session begins when ``start()`` is called
+    (the app calls it on Start, like a person waiting for the go-ahead); until
+    then, and after it, the scene is empty. Frames come no faster than the
+    caller reads them, so a slow reader sees no gaps.
+    """
+
+    drops_when_late = False  # a real camera's frames are lost if not read in time
+
+    def __init__(
+        self,
+        camera: Camera,
+        spec: SessionSpec,
+        speed: float = 1.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.camera = camera
+        self.spec = spec
+        self.speed = speed
+        self.trajectory, self.truth = build(spec, camera)
+        self._t = 0.0  # capture time of the frame being rendered
+        self._began: float | None = None  # capture time the session began
+        self._frames = render(camera, spec, self.trajectory, self._session_times())
+        self._clock, self._sleep = clock, sleep
+        self._start: float | None = None
+        self.name = f"synthetic {camera.width}x{camera.height}"
+        self.width, self.height, self.fps = camera.width, camera.height, camera.fps
+
+    def _session_times(self) -> Iterator[float]:
+        for i in itertools.count():
+            self._t = i / self.camera.fps
+            yield 0.0 if self._began is None else self._t - self._began
+
+    def start(self) -> None:
+        """Begin the made-up session at the next frame."""
+        if self._began is None:
+            self._began = self._t + 1 / self.camera.fps
+
+    def read(self) -> tuple[float, np.ndarray] | None:
+        _, frame = next(self._frames)
+        t = self._t
+        if self._start is None:
+            self._start = self._clock()
+        wait = self._start + t / self.speed - self._clock()
+        if wait > 0:
+            self._sleep(wait)
+        return t, frame
+
+    def close(self) -> None:
+        self._frames.close()
+
+
+def demo_camera(speed: float = 1.0) -> SyntheticCamera:
+    """A 720p webcam's view of three balls, three drops each, with a tilted camera.
+    The set-up to match: 72 in drop, 36 in mid mark, 3 drops per ball."""
+    camera = Camera.framing(
+        SessionSpec().drop_height_cm, 8.0, width=1280, height=720, vfov_deg=45, distance_m=3.2
+    )
+    spec = SessionSpec(cor=(0.75, 0.71, 0.73), drops_per_ball=3, seed=3)
+    return SyntheticCamera(camera, spec, speed)
 
 
 def write_clip(path: Path, camera: Camera, spec: SessionSpec) -> Truth:

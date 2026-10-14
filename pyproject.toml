@@ -13,9 +13,12 @@ dependencies = ["bleak", "flask", "waitress"]
 [project.scripts]
 canister-collector = "canister_monitor.collector:main"
 canister-web = "canister_monitor.web.__main__:main"
+canister-video = "canister_monitor.video.cli:main"  # laptop only; needs the video extra
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+# Laptop-only bounce-video tool (PLAN.md 6.3). Never installed on the Pi.
+video = ["opencv-python>=4.8", "numpy>=1.26"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

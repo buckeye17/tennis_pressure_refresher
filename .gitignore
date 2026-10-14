@@ -8,3 +8,4 @@ config.toml
 .ruff_cache/
 samples/
 recordings/
+.claude/

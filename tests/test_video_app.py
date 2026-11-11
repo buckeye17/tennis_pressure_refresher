@@ -438,6 +438,25 @@ def test_camera_opens_with_a_saved_rotation(tmp_path):
     client.post("/api/close")
 
 
+def test_tracking_area_on_a_camera(tmp_path):
+    cam = synth.Camera.framing(H, **SMALL)
+    spec = synth.SessionSpec(cor=(0.74,), drops_per_ball=1)
+    _, client = make_client(tmp_path, {"s": lambda: synth.SyntheticCamera(cam, spec, speed=2.0)})
+    area = [[0.25, 0.0], [0.75, 0.0], [0.5, 1.0]]
+    assert client.post("/api/camera", json={"key": "s", "area": [[0, 0]]}).status_code == 400
+    st = client.post("/api/camera", json={"key": "s", "area": area}).get_json()
+    assert st["area"] == area
+    assert client.post("/api/area", json={"area": "x"}).status_code == 400
+    assert client.post("/api/area", json={"area": None}).get_json()["area"] is None
+    assert client.post("/api/area", json={"area": area}).get_json()["area"] == area
+    # The area was drawn on the unturned picture, so turning it drops the area,
+    # unless the page sends the one saved for the new rotation.
+    assert client.post("/api/rotate", json={"rotation": 90}).get_json()["area"] is None
+    st = client.post("/api/rotate", json={"rotation": 0, "area": area}).get_json()
+    assert st["area"] == area
+    client.post("/api/close")
+
+
 def test_camera_that_fails_to_open(tmp_path):
     _, client = make_client(tmp_path)
     resp = client.post("/api/camera", json={"key": "3"})
@@ -481,6 +500,25 @@ def test_clip_upload_and_analysis(tmp_path):
     assert st["color_picked"]
     st = wait_for(client, lambda s: s["phase"] == "review")
     assert len(st["review"]["drops"]) == 2
+
+    # Analyse again inside a tracking area around the drop line; the area is kept for
+    # the next analysis unless one is given, and saved with the analysis.
+    area = [[0.2, 0.0], [0.8, 0.0], [0.8, 1.0], [0.2, 1.0]]
+    bad = client.post("/api/reanalyse", json={"pick": None, "area": [[0, 0]]})
+    assert bad.status_code == 400
+    st = client.post("/api/reanalyse", json={"pick": None, "area": area}).get_json()
+    assert st["area"] == area
+    assert client.post("/api/area", json={"area": None}).status_code == 400  # not for a clip
+    st = wait_for(client, lambda s: s["phase"] == "review")
+    assert len(st["review"]["drops"]) == 2
+    st = client.post("/api/reanalyse", json={"pick": None}).get_json()
+    assert st["area"] == area
+    wait_for(client, lambda s: s["phase"] == "review")
+    doc = json.loads(client.get("/api/review.json").data)
+    assert doc["analysis"]["params"]["area"] == area
+    st = client.post("/api/reanalyse", json={"pick": None, "area": None}).get_json()
+    assert st["area"] is None
+    wait_for(client, lambda s: s["phase"] == "review")
 
 
 def test_not_a_video(tmp_path):

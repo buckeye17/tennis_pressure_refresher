@@ -40,6 +40,9 @@
   };
   prefs.mid = prefs.mid || {};
   prefs.rotation = prefs.rotation || {}; // per camera
+  prefs.area = prefs.area || {}; // tracking area per camera and rotation: "key|rotation"
+  const areaKey = (camera, rotation) => `${camera}|${rotation || 0}`;
+  const savedArea = (camera, rotation) => prefs.area[areaKey(camera, rotation)] || null;
 
   const ui = {
     units: prefs.units || null, // null until the Pi says, then "in" or "cm"
@@ -229,7 +232,8 @@
         type: "button",
         onclick: () => {
           ui.cameraKey = c.key;
-          act(() => api("POST", "/api/camera", { key: c.key, rotation: prefs.rotation[c.key] || 0 }));
+          const rotation = prefs.rotation[c.key] || 0;
+          act(() => api("POST", "/api/camera", { key: c.key, rotation, area: savedArea(c.key, rotation) }));
         },
       }, el("span", {}, c.label), el("span", { class: "muted small" }, `${c.width}×${c.height}`))));
       if (!cams.length) box.append(el("p", { class: "muted small" }, "No webcam found."));
@@ -305,8 +309,9 @@
       if (want == null) img.removeAttribute("src");
       else img.src = `/preview.mjpg?session=${want}`;
     }
-    img.hidden = want == null;
+    $("#preview-frame").hidden = want == null;
     $("#placeholder").hidden = want != null;
+    previewArea.show(st.area ?? null);
     $("#preview-wrap").hidden = st.phase === "review";
     $("#review-wrap").hidden = st.phase !== "review";
   }
@@ -318,6 +323,9 @@
     $("#analysing").hidden = phase !== "analysing";
     $("#provisional").hidden = phase !== "live";
     $("#pick-hint").hidden = phase === "analysing";
+    const canDraw = st.kind === "camera" && (phase === "framing" || phase === "live");
+    $("#area-controls").hidden = !canDraw;
+    if (!canDraw) previewArea.cancel();
 
     const pr = st.prompt;
     if (phase === "framing") {
@@ -463,6 +471,7 @@
     ui.pick = null;
     $("#frame-mark").hidden = true;
     $("#reanalyse-pick").disabled = true;
+    dialogArea.reset(st.area ?? null);
     const range = $("#frame-t");
     range.max = Math.max(st.duration_s || 0, 0.1);
     range.value = Math.min(1, range.max);
@@ -482,8 +491,138 @@
   function reanalyse(withPick) {
     if (ui.state.review?.drops.some((d) => d.edited_cm != null || !d.kept) && !confirm("Your review edits will be lost. Analyse again?")) return;
     $("#reanalyse").close();
-    act(() => api("POST", "/api/reanalyse", { pick: withPick ? ui.pick : null }));
+    act(() => api("POST", "/api/reanalyse", { pick: withPick ? ui.pick : null, area: dialogArea.area() }));
   }
+
+  // --- tracking area ---------------------------------------------------------------------
+  // A polygon around where the ball moves; the server ignores yellow blobs outside it.
+  // Corners are fractions of the picture, like clicks.
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const CLOSE_PX = 12; // a click this near the first corner closes the polygon
+
+  function areaTool({ frame, img, controls, commit }) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "area-svg");
+    svg.setAttribute("viewBox", "0 0 1 1");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("aria-hidden", "true");
+    frame.append(svg);
+    let area = null; // the polygon in use
+    let points = null; // corners so far while drawing, else null
+
+    const pathOf = (pts, close) =>
+      pts.map(([x, y], i) => `${i ? "L" : "M"}${x} ${y}`).join(" ") + (close ? " Z" : "");
+
+    function draw() {
+      const shapes = [];
+      const shape = (d, cls) => {
+        const p = document.createElementNS(SVG_NS, "path");
+        p.setAttribute("d", d);
+        p.setAttribute("class", cls);
+        p.setAttribute("vector-effect", "non-scaling-stroke");
+        shapes.push(p);
+      };
+      if (points) {
+        if (points.length > 1) shape(pathOf(points, false), "area-line");
+      } else if (area) {
+        shape(`M0 0H1V1H0Z ${pathOf(area, true)}`, "area-shade");
+        shape(pathOf(area, true), "area-line");
+      }
+      svg.replaceChildren(...shapes);
+      frame.querySelectorAll(".area-dot").forEach((d) => d.remove());
+      (points || []).forEach(([x, y], i) => frame.append(el("span", {
+        class: i ? "area-dot" : "area-dot first", style: `left: ${x * 100}%; top: ${y * 100}%`,
+      })));
+      renderControls();
+    }
+
+    function renderControls() {
+      const button = (text, onclick, attrs = {}) => el("button", { type: "button", onclick, ...attrs }, text);
+      if (points) {
+        controls.replaceChildren(
+          el("p", { class: "muted small" }, "Click the corners of the area where the ball moves: " +
+            "from the floor to above the drop mark, with room for your hand. Click the first corner, " +
+            "or Done, to finish."),
+          el("div", { class: "actions" },
+            button("Done", finish, { class: "primary", disabled: points.length < 3 }),
+            button("Undo corner", () => { points.pop(); draw(); }, { disabled: !points.length }),
+            button("Cancel", cancel)),
+        );
+        return;
+      }
+      controls.replaceChildren(
+        el("div", { class: "actions" },
+          button(area ? "Redraw tracking area" : "Draw tracking area", start),
+          area ? button("Clear", () => { area = null; draw(); commit(null); }) : null),
+        el("p", { class: "muted small" }, area
+          ? "The ball is looked for only inside the area."
+          : "If something else yellow gets picked up, draw an area around where the ball moves."),
+      );
+    }
+
+    function start() { points = []; draw(); }
+    function cancel() { if (points) { points = null; draw(); } }
+    function finish() {
+      if (!points || points.length < 3) return;
+      area = points;
+      points = null;
+      draw();
+      commit(area);
+    }
+
+    // Returns true if the click was used for drawing (so it isn't also a colour pick).
+    function click(e) {
+      if (!points) return false;
+      const f = clickFraction(e, img);
+      const r = img.getBoundingClientRect();
+      const first = points[0];
+      if (points.length >= 3 && Math.hypot((f.x - first[0]) * r.width, (f.y - first[1]) * r.height) <= CLOSE_PX) {
+        finish();
+      } else {
+        points.push([+f.x.toFixed(4), +f.y.toFixed(4)]);
+        draw();
+      }
+      return true;
+    }
+
+    // The server's area; ignored while drawing, so a poll doesn't wipe the corners.
+    function show(next) {
+      if (points || JSON.stringify(next) === JSON.stringify(area)) return;
+      area = next;
+      draw();
+    }
+
+    function reset(next) { points = null; area = next; draw(); }
+
+    document.addEventListener("keydown", (e) => {
+      if (points && e.key === "Escape" && frame.offsetParent) { e.preventDefault(); cancel(); }
+    });
+    draw();
+    return { click, show, reset, cancel, area: () => area };
+  }
+
+  const previewArea = areaTool({
+    frame: $("#preview-frame"),
+    img: $("#preview"),
+    controls: $("#area-controls"),
+    commit: (area) => act(async () => {
+      const st = await api("POST", "/api/area", { area });
+      if (ui.cameraKey != null) {
+        const key = areaKey(ui.cameraKey, st.source?.rotation);
+        if (area) prefs.area[key] = area; else delete prefs.area[key];
+        savePrefs();
+      }
+      return st;
+    }),
+  });
+
+  const dialogArea = areaTool({
+    frame: $("#frame").parentElement,
+    img: $("#frame"),
+    controls: $("#reanalyse-area"),
+    commit: () => {}, // sent with Analyse again
+  });
 
   // --- wiring -------------------------------------------------------------------------
 
@@ -517,7 +656,9 @@
     $("#rotation").addEventListener("change", (e) => {
       const rotation = +e.target.value;
       if (ui.cameraKey != null) { prefs.rotation[ui.cameraKey] = rotation; savePrefs(); }
-      act(() => api("POST", "/api/rotate", { rotation }));
+      previewArea.cancel();
+      const area = ui.cameraKey != null ? savedArea(ui.cameraKey, rotation) : null;
+      act(() => api("POST", "/api/rotate", { rotation, area }));
     });
     $("#close-camera").addEventListener("click", () => act(() => api("POST", "/api/close")));
     document.querySelectorAll("[data-cmd]").forEach((b) => b.addEventListener("click", () => {
@@ -527,6 +668,7 @@
     }));
     $("#cancel").addEventListener("click", () => act(() => api("POST", "/api/close")));
     $("#preview").addEventListener("click", (e) => {
+      if (previewArea.click(e)) return;
       if (!["framing", "live", "analysing"].includes(ui.state.phase)) return;
       act(() => api("POST", "/api/pick", clickFraction(e, e.target)));
     });
@@ -541,6 +683,7 @@
     $("#frame-t").addEventListener("change", loadFrame);
     $("#frame-t").addEventListener("input", () => { $("#frame-time").textContent = `${(+$("#frame-t").value).toFixed(1)} s`; });
     $("#frame").addEventListener("click", (e) => {
+      if (dialogArea.click(e)) return;
       const f = clickFraction(e, e.target);
       ui.pick = { t: +$("#frame-t").value, ...f };
       const mark = $("#frame-mark");

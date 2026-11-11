@@ -27,7 +27,13 @@ import cv2
 import numpy as np
 
 from canister_monitor.bounce import outlier_json, summarize
-from canister_monitor.video.detect import BallDetector, ColorRange, sample_color
+from canister_monitor.video.detect import (
+    Area,
+    BallDetector,
+    ColorRange,
+    check_area,
+    sample_color,
+)
 from canister_monitor.video.measure import HoldEvent
 from canister_monitor.video.pipeline import TOOL, Analyzer, VideoInfo, open_clip, times_path
 from canister_monitor.video.sources import FrameSource, check_rotation, rotated
@@ -41,6 +47,7 @@ FPS_WARN = 25.0  # webcams slow down in dim light, which also blurs the ball
 QUEUE_S = 2.0  # live frames waiting for analysis before new ones are dropped
 COMMAND_TIMEOUT_S = 5.0
 MAX_CM = 500.0
+KEEP = object()  # Controller.reanalyse: keep the session's tracking area
 
 
 def stamp() -> str:
@@ -461,6 +468,7 @@ class Run:
             "preview_fps": self.preview_fps(),
             "ball_seen": self._obs is not None,
             "color_picked": self.detector.color != ColorRange(),
+            "area": None if self.detector.area is None else [list(p) for p in self.detector.area],
         }
         if self.analyzer is not None and self.phase != "review":
             out.update(self._progress())
@@ -560,6 +568,13 @@ class Run:
         self.detector.last_seen = None
         return asdict(color)
 
+    def _cmd_area(self, area: object) -> None:
+        """Track the ball only inside ``area`` (see detect.check_area); None: anywhere."""
+        if self.kind == "clip":
+            raise ValueError("a clip's tracking area is set with Analyse again")
+        self.detector.set_area(check_area(area))
+        self._obs = None
+
     def _to_review(self) -> None:
         assert self.analyzer is not None and self.params is not None
         self.analyzer.finish()
@@ -578,9 +593,15 @@ class LiveRun(Run):
     kind = "camera"
 
     def __init__(
-        self, run_id: int, recordings: Path, source: FrameSource, rotation: int = 0
+        self,
+        run_id: int,
+        recordings: Path,
+        source: FrameSource,
+        rotation: int = 0,
+        area: Area | None = None,
     ) -> None:
         super().__init__(run_id, recordings)
+        self.detector.area = area
         self.source = source
         self.rotation = rotation  # applied to each frame before anything else sees it
         self.phase = "framing"
@@ -744,11 +765,14 @@ class LiveRun(Run):
 
     # --- commands --------------------------------------------------------------------
 
-    def _cmd_rotate(self, rotation: object) -> None:
+    def _cmd_rotate(self, rotation: object, area: object = None) -> None:
+        """Turn the picture; ``area`` is the tracking area for the turned picture."""
         if self.phase != "framing":
             raise ValueError("the picture can only be rotated before Start")
-        self.rotation = check_rotation(rotation)
+        turn, region = check_rotation(rotation), check_area(area)
+        self.rotation = turn
         self.detector.forget()
+        self.detector.area = region
         self._obs = None
 
     def _cmd_start(self, params: Params) -> None:
@@ -809,14 +833,14 @@ class ClipRun(Run):
         path: Path,
         params: Params,
         color: ColorRange | None = None,
+        area: Area | None = None,
     ) -> None:
         super().__init__(run_id, recordings)
         self.file = path
         self.params = params
         self.phase = "analysing"
         self.total_frames = 0
-        if color is not None:
-            self.detector = BallDetector(color=color)
+        self.detector = BallDetector(color=color, area=area)
         self._threads = [threading.Thread(target=self._process, name="clip", daemon=True)]
         self._threads[0].start()
 
@@ -880,19 +904,27 @@ class Controller:
             self.run = run
             return run
 
-    def camera(self, key: str, rotation: object = 0) -> Run:
-        turn = check_rotation(rotation)
+    def camera(self, key: str, rotation: object = 0, area: object = None) -> Run:
+        turn, region = check_rotation(rotation), check_area(area)
         with self._lock:
             self.close()  # a camera can't be opened twice
             source = self.open_camera(key)  # raises ValueError if it can't
-            return self._replace(lambda i: LiveRun(i, self.recordings, source, turn))
+            return self._replace(lambda i: LiveRun(i, self.recordings, source, turn, region))
 
-    def clip(self, path: Path, params: Params, color: ColorRange | None = None) -> Run:
-        return self._replace(lambda i: ClipRun(i, self.recordings, path, params, color))
+    def clip(
+        self,
+        path: Path,
+        params: Params,
+        color: ColorRange | None = None,
+        area: Area | None = None,
+    ) -> Run:
+        return self._replace(lambda i: ClipRun(i, self.recordings, path, params, color, area))
 
-    def reanalyse(self, pick: dict | None) -> Run:
+    def reanalyse(self, pick: dict | None, area: object = KEEP) -> Run:
         """Analyse the current session's clip or recording again, optionally with the
-        ball's colour taught by a click on one of its frames."""
+        ball's colour taught by a click on one of its frames, and a tracking area
+        (by default the one the session had)."""
+        region = None if area is KEEP else check_area(area)
         with self._lock:
             run = self.run
             if run is None or run.phase not in ("review", "error") or run.file is None:
@@ -906,7 +938,9 @@ class Controller:
                     raise ValueError("can't read that frame")
                 h, w = frame.shape[:2]
                 color = ColorRange.around(sample_color(frame, pick["x"] * w, pick["y"] * h))
-            return self.clip(run.file, run.params, color)
+            if area is KEEP:
+                region = run.detector.area
+            return self.clip(run.file, run.params, color, region)
 
     def current(self, session: int | None = None) -> Run:
         run = self.run

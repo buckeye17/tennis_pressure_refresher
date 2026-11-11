@@ -104,6 +104,7 @@
           <span id="analyse-text" class="small muted"></span>
           <div class="actions"><button id="cancel" type="button">Cancel</button></div>
         </div>
+        <div id="area-controls" class="area-controls" hidden></div>
         <p class="muted small" id="pick-hint">Click the ball in the picture to teach the app its
           colour if it isn't outlined.</p>
         <table id="live-drops" class="drops">
@@ -148,7 +149,9 @@
     <section class="stage">
       <div id="notice" class="notice" hidden></div>
       <div id="preview-wrap" class="preview-wrap">
-        <img id="preview" alt="Camera preview: click the ball to teach its colour" hidden>
+        <div id="preview-frame" class="area-frame" hidden>
+          <img id="preview" alt="Camera preview: click the ball to teach its colour">
+        </div>
         <div id="placeholder" class="placeholder">
           <p>Pick a webcam or drop a phone clip on the left.</p>
           <p class="muted small">Set up: camera steady 2–3 m from the drop line, the whole drop and
@@ -173,9 +176,11 @@
     <form method="dialog">
       <h2>Analyse again</h2>
       <p class="small muted">Find a frame where the ball is clear, then click it to teach the app
-        its colour. Review edits are lost.</p>
-      <div class="frame-wrap"><img id="frame" alt="A frame of the video"><span id="frame-mark"
-          class="mark" hidden></span></div>
+        its colour. You can also draw a tracking area, so yellow things outside it are ignored.
+        Review edits are lost.</p>
+      <div class="frame-wrap area-frame"><img id="frame" alt="A frame of the video"><span
+          id="frame-mark" class="mark" hidden></span></div>
+      <div id="reanalyse-area" class="area-controls"></div>
       <input id="frame-t" type="range" min="0" step="0.1" value="0">
       <span id="frame-time" class="small muted"></span>
       <div class="actions">

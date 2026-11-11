@@ -13,7 +13,7 @@ cv2 = pytest.importorskip("cv2")
 import numpy as np  # noqa: E402
 
 from canister_monitor.video import cli, measure, pipeline, synth  # noqa: E402
-from canister_monitor.video.detect import BallDetector  # noqa: E402
+from canister_monitor.video.detect import BallDetector, check_area  # noqa: E402
 from canister_monitor.video.measure import Measurer, Observation, fit_calibration  # noqa: E402
 
 H = 182.88  # 72 in
@@ -62,6 +62,61 @@ def test_a_clicked_ball_may_be_small():
     det = BallDetector(start_point=(300.0, 400.0))
     seen = [det.detect(disc(300, 400, SPECK_R), i / 30) for i in range(10)]
     assert all(o is not None for o in seen)
+
+
+RIGHT_HALF = ((0.5, 0.0), (1.0, 0.0), (1.0, 1.0), (0.5, 1.0))  # x past 360 of 720
+
+
+def two_balls(left_y: int, right_y: int) -> np.ndarray:
+    frame = disc(150, left_y, BALL_R)
+    cv2.circle(frame, (550, right_y), BALL_R - 2, synth.BALL_BGR, -1, cv2.LINE_AA)
+    return frame
+
+
+def test_a_ball_outside_the_tracking_area_is_ignored():
+    # The left ball is bigger, so without an area it is the one picked up.
+    frames = [two_balls(300 + 8 * i, 900 - 8 * i) for i in range(30)]
+    plain = BallDetector()
+    free = [plain.detect(f, i / 30) for i, f in enumerate(frames)]
+    assert any(o is not None and o.cx < 360 for o in free)
+    det = BallDetector(area=RIGHT_HALF)
+    seen = [det.detect(f, i / 30) for i, f in enumerate(frames)]
+    assert any(o is not None for o in seen)
+    assert all(o.cx > 360 for o in seen if o is not None)
+
+
+def test_drawing_an_area_lets_go_of_a_ball_outside_it():
+    det = BallDetector()
+    for i in range(30):
+        last = det.detect(disc(150, 300 + 8 * i, BALL_R), i / 30)
+    assert last is not None and det.track
+    det.set_area(RIGHT_HALF)
+    assert not det.track and det.last_seen is None
+    assert det.detect(disc(150, 300 + 8 * 30, BALL_R), 1.0) is None
+    det.set_area(None)
+    assert det.area is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "x",
+        [[0, 0], [1, 0]],  # two points
+        [[0, 0], [1, 0], [1, 1.5]],  # off the picture
+        [[0, 0], [1, 0], [True, 1]],
+        [[0, 0], [1, 0], [1]],
+        [[0, 0], [0.5, 0.5], [1, 1]],  # a line
+        [[0, 0], [1, 0]] * 40,  # too many
+    ],
+)
+def test_check_area_refuses_what_is_not_a_polygon(bad):
+    with pytest.raises(ValueError):
+        check_area(bad)
+
+
+def test_check_area():
+    assert check_area(None) is None
+    assert check_area([[0, 0], [1, 0], [0.5, 1]]) == ((0.0, 0.0), (1.0, 0.0), (0.5, 1.0))
 
 
 # --- calibration maths ------------------------------------------------------------------

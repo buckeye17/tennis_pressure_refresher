@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from canister_monitor import __version__
-from canister_monitor.video.detect import BallDetector
+from canister_monitor.video.detect import Area, BallDetector
 from canister_monitor.video.measure import (
     CalibrationEvent,
     Drop,
@@ -100,6 +100,7 @@ class Result:
     drops_per_ball: int
     settings: Settings
     color: dict
+    area: Area | None = None  # the tracking area, if one was drawn
     frames: int = 0
     ball_found: int = 0
     holds: list = field(default_factory=list)
@@ -116,7 +117,11 @@ class Result:
             "mid_mark_cm": self.mid_mark_cm,
             "drops_per_ball": self.drops_per_ball,
             "frames": {"total": self.frames, "ball_found": self.ball_found},
-            "params": {"color": self.color, "settings": asdict(self.settings)},
+            "params": {
+                "color": self.color,
+                "area": None if self.area is None else [list(p) for p in self.area],
+                "settings": asdict(self.settings),
+            },
             "holds": [asdict(h) for h in self.holds],
             "calibration": None if cal is None else asdict(cal),
             "drops": [
@@ -168,10 +173,12 @@ class Analyzer:
             drops_per_ball=drops_per_ball,
             settings=self.measurer.s,
             color=asdict(self.detector.color),
+            area=self.detector.area,
         )
 
     def process(self, t: float, frame: np.ndarray) -> list:
         obs = self.detector.detect(frame, t)
+        self.result.area = self.detector.area  # it can be redrawn during a live session
         self.result.frames += 1
         self.result.ball_found += obs is not None
         if self.trace is not None:

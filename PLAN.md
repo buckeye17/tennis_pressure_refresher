@@ -345,6 +345,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
   - A preview at ~10–15 fps shows the ball outlined, the calibration rows once set, and each drop's apex line. The analysis itself uses every frame the camera delivers.
   - A prompt guides the user: "Hold the ball on the floor", "…at the mid mark", "…at the drop mark", then "Ball 2, drop 1". Each height is added to a list when the ball is caught.
   - Buttons: **Undo** last drop, **Next ball**, **Recalibrate**, **Finish**. Clicking the ball in the preview teaches its colour, like `--pick`.
+  - **Draw tracking area** (framing or live): click the corners of a polygon around where the ball moves, then click the first corner or Done. Outside it is shaded, and the ball is looked for only inside (see Finding the ball). It is remembered per camera and rotation in the browser, and cleared by Clear.
   - The app asks the camera for 1280×720 at 60 fps and shows the rate it actually gets. It warns below 25 fps: webcams slow down in dim light, which also blurs the ball.
   - Timestamps come from the capture clock, so a dropped frame doesn't distort the fits.
   - The session is also recorded to `recordings/<time>.mp4` (git-ignored), with each frame's capture time in `<time>.times.txt`, so it can be re-analysed as a clip with its true timing. Expect about 100 MB for 3 minutes at 720p.
@@ -361,6 +362,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - Optic-yellow pixels (HSV range) are grouped into blobs, and blobs of the wrong shape are dropped. The ball is picked up as the first yellow blob that **moves**, so a yellow thing sitting still in the background is ignored. From then on it's tracked as the blob nearest where it should be.
 - Blobs narrower than 1.8% of the frame's height aren't picked up (a ball in a picture 3.7 m tall at the drop line), and a followed blob is dropped below 75% of that. Real rooms have yellowish specks that flicker, which looks like motion; without the second limit, following slides from a ball onto one. Clicking the ball overrides both, for a camera set further back.
 - The default yellow range can be replaced by clicking the ball: in the app's preview, or with `--pick` on the command line.
+- **Tracking area** (optional, drawn in the app): blobs whose centre is outside the polygon are ignored, both when picking the ball up and when following it, so a yellow thing moving elsewhere in the room can't be taken for the ball. Its corners are fractions of the upright picture, so it fits a recording at any size. Drawing it lets go of a ball being followed outside it. The analysis JSON keeps it in `params.area`.
 - Per frame: centre, width, and the **bottom edge to a fraction of a pixel**. Down a strip through the ball's centre, in the full-resolution frame, each row's colour is placed between the ball's colour and the background's; the edge is where it crosses halfway.
   - Motion blur smears an edge symmetrically, so the halfway point is where the ball was at mid-exposure. One measure therefore serves a ball at rest and one in flight.
   - The hand holding a ball covers its top, not its bottom.
@@ -907,7 +909,7 @@ Next, in order. Data collection comes first because it takes the longest:
        - The mid mark is typed in the app and remembered per setup in the browser until step 4 stores it with the setup.
        - If the Pi can't be reached, a drop height can be typed instead, so clips can still be measured.
      - Review: per-drop picture, ball, measured and typed-over height, keep, warnings; per-ball medians and the average update after each edit.
-       - **Analyse again…** re-runs the clip or the live recording, optionally with the colour of a ball clicked on a chosen frame.
+       - **Analyse again…** re-runs the clip or the live recording, optionally with the colour of a ball clicked on a chosen frame. It keeps the session's tracking area, which can be drawn, redrawn or cleared on that frame; a phone clip's area is drawn only here.
        - **Download JSON** gives the test (`batch_id`, `setup_id`, `context`, `source: video`, kept drops at reviewed heights), the analysis (`filename`, video with calibration, params) and every drop with its detail and JPEG. This is the document Save to Pi will send.
      - Measurement changes found while building the live mode:
        - **Recalibrate** works after drops: each drop keeps the calibration it was measured with, and the end-of-session re-anchoring is done per calibration.

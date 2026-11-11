@@ -6,6 +6,7 @@ yellow thing sitting still in the background is ignored, and from then on it
 is tracked as the blob nearest where it should be. Holding the ball still
 doesn't lose it: tracking only needs it to stay put or move continuously.
 Blobs too narrow to be a ball are ignored, unless the user clicked one.
+If the user drew a tracking area, blobs whose centre is outside it are ignored.
 
 Frames are analysed at about ``analysis_height`` rows; results are reported
 in pixels of the original frame.
@@ -60,6 +61,43 @@ MIN_BALL_FRAC = 0.018
 # but not by this much: without a limit, following slides from a ball onto a speck.
 FOLLOW_SHRINK = 0.75
 
+# A tracking area: a polygon's corners, each (x, y) as fractions of the picture's width
+# and height, so it fits the picture at any resolution.
+Area = tuple[tuple[float, float], ...]
+MAX_AREA_POINTS = 64
+
+
+def check_area(value: object) -> Area | None:
+    """An area from JSON (a list of [x, y] pairs, or null), or ValueError."""
+    if value is None:
+        return None
+    msg = (
+        f"the tracking area must be 3 to {MAX_AREA_POINTS} points [x, y], "
+        "each a fraction of the picture from 0 to 1"
+    )
+    if not isinstance(value, (list, tuple)) or not 3 <= len(value) <= MAX_AREA_POINTS:
+        raise ValueError(msg)
+    points = []
+    for p in value:
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
+            raise ValueError(msg)
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p):
+            raise ValueError(msg)
+        x, y = float(p[0]), float(p[1])
+        if not (0 <= x <= 1 and 0 <= y <= 1):
+            raise ValueError(msg)
+        points.append((x, y))
+    if abs(_signed_area(points)) < 1e-3:  # under 0.1% of the picture: a line or a dot
+        raise ValueError("the tracking area is too small")
+    return tuple(points)
+
+
+def _signed_area(points: list[tuple[float, float]]) -> float:
+    return 0.5 * sum(
+        x0 * y1 - x1 * y0
+        for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1], strict=True)
+    )
+
 
 class BallDetector:
     def __init__(
@@ -70,6 +108,7 @@ class BallDetector:
         min_radius_px: float = 3.0,
         lost_after_s: float = 0.6,
         min_ball_frac: float = MIN_BALL_FRAC,
+        area: Area | None = None,
     ) -> None:
         self.analysis_height = analysis_height
         self.color = color or ColorRange()
@@ -77,6 +116,9 @@ class BallDetector:
         self.min_radius_px = min_radius_px
         self.lost_after_s = lost_after_s
         self.min_ball_frac = min_ball_frac
+        self.area = area  # only blobs centred inside it count; None: the whole picture
+        self._area_px: tuple[tuple[int, int], np.ndarray] | None = None  # (frame size, polygon)
+        self._size: tuple[int, int] | None = None  # the last frame's (width, height)
         self._clicked = False  # the user chose this blob, so it may be any size
         self.track: deque[Observation] = deque(maxlen=3)
         self.last_seen: Observation | None = None  # kept after the track is lost
@@ -87,9 +129,30 @@ class BallDetector:
         """Drop everything tied to positions in the picture; the colour stays."""
         self.start_point = None
         self._clicked = False
+        self.set_area(None)
         self.track.clear()
         self.last_seen = None
         self._past.clear()
+
+    def set_area(self, area: Area | None) -> None:
+        """Track only inside ``area`` from now on. A ball being followed outside it is
+        let go at once, rather than when it's next missed."""
+        self.area = area
+        self._area_px = None
+        last = self.track[-1] if self.track else self.last_seen
+        if area is not None and last is not None and self._size is not None:
+            if not self._inside(last.cx, last.cy, *self._size):
+                self.track.clear()
+                self.last_seen = None
+        self._past.clear()  # blobs seen before may be outside; motion is judged afresh
+
+    def _inside(self, x: float, y: float, w: int, h: int) -> bool:
+        if self.area is None:
+            return True
+        if self._area_px is None or self._area_px[0] != (w, h):
+            poly = np.array([(px * w, py * h) for px, py in self.area], np.float32)
+            self._area_px = ((w, h), poly.reshape(-1, 1, 2))
+        return cv2.pointPolygonTest(self._area_px[1], (float(x), float(y)), False) >= 0
 
     def restart_clock(self, t0: float) -> None:
         """Make ``t0`` time zero, keeping what has been seen.
@@ -106,6 +169,7 @@ class BallDetector:
     def candidates(self, frame: np.ndarray, t: float) -> list[Candidate]:
         """Ball-shaped yellow blobs, in original-frame pixels."""
         h0, w0 = frame.shape[:2]
+        self._size = (w0, h0)
         scale = min(1.0, self.analysis_height / h0)
         small = (
             cv2.resize(frame, (round(w0 * scale), round(h0 * scale)), interpolation=cv2.INTER_AREA)
@@ -128,6 +192,8 @@ class BallDetector:
             if fill < 0.45 or not 0.5 <= aspect <= 5.0:
                 continue
             cx, cy = cents[i]
+            if not self._inside((cx + 0.5) / scale, (cy + 0.5) / scale, w0, h0):
+                continue
             obs = Observation(
                 t=t,
                 cx=(cx + 0.5) / scale,

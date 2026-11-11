@@ -150,13 +150,14 @@ def create_app(
         key = b.get("key")
         if not isinstance(key, str):
             raise ApiError("key must be text")
-        call(controller.camera, key, b.get("rotation", 0))
+        call(controller.camera, key, b.get("rotation", 0), b.get("area"))
         return state()
 
     @app.post("/api/rotate")
     def rotate():
-        rotation = body().get("rotation")
-        call(lambda: controller.current().command("rotate", rotation=rotation))
+        b = body()
+        rotation, area = b.get("rotation"), b.get("area")
+        call(lambda: controller.current().command("rotate", rotation=rotation, area=area))
         return state()
 
     @app.post("/api/start")
@@ -179,6 +180,13 @@ def create_app(
         if not all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in (x, y)):
             raise ApiError("x and y must be fractions of the picture, 0 to 1")
         call(lambda: controller.current().command("pick", x=float(x), y=float(y)))
+        return state()
+
+    @app.post("/api/area")
+    def set_area():
+        """The tracking area: {"area": [[x, y], ...]} as fractions of the picture, or null."""
+        area = body().get("area")
+        call(lambda: controller.current().command("area", area=area))
         return state()
 
     @app.post("/api/upload")
@@ -218,14 +226,18 @@ def create_app(
 
     @app.post("/api/reanalyse")
     def reanalyse():
-        pick = body().get("pick")
+        b = body()
+        pick = b.get("pick")
         if pick is not None:
             ok = isinstance(pick, dict) and all(
                 isinstance(pick.get(k), (int, float)) for k in ("t", "x", "y")
             )
             if not ok or not (0 <= pick["x"] <= 1 and 0 <= pick["y"] <= 1):
                 raise ApiError("pick must have t (seconds) and x, y (fractions of the picture)")
-        call(controller.reanalyse, pick)
+        if "area" in b:  # left out: keep the session's tracking area
+            call(controller.reanalyse, pick, b["area"])
+        else:
+            call(controller.reanalyse, pick)
         return state()
 
     @app.get("/api/frame.jpg")

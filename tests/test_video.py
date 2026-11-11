@@ -154,6 +154,67 @@ def test_holds_survive_compression_jitter():
         assert d.rebound_cm == pytest.approx(corrected(t), rel=0.003)
 
 
+def test_one_bad_frame_does_not_end_the_rise():
+    """A single frame whose edge lands well below the ball (a mark on the wall behind
+    it) once ended a live rise early and cut a drop 10 cm short."""
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, truth = observations(synth.Camera.framing(H, 10.0), spec)
+    clean, _ = run(obs, spec)
+    times = [t for t, _ in obs]
+    bad = {min(times, key=lambda t, d=d: abs(t - (d.t_apex - 0.1))) for d in clean.drops}
+    glitched = [
+        (t, replace(o, bottom=o.bottom + 1.25 * o.width) if o is not None and t in bad else o)
+        for t, o in obs
+    ]
+    m, _ = run(glitched, spec)
+    assert len(m.drops) == 3
+    for d, t in zip(m.drops, truth.drops, strict=True):
+        assert d.rebound_cm == pytest.approx(corrected(t), rel=0.003)
+
+
+@pytest.mark.parametrize(
+    "cam",
+    [synth.Camera.framing(H, 8.0), synth.Camera.framing(H, 30.0, vfov_deg=90, distance_m=2.5)],
+    ids=["level-ish", "low-wide-angle-looking-up"],
+)
+def test_coarse_frame_times_and_a_steep_camera_raise_no_warnings(cam):
+    """A webcam session timed by a 15.6 ms clock tick (Python's monotonic on Windows),
+    and a wide-angle camera near the floor looking up: the heights are fine, so no
+    warnings. Seen on a real session, where every drop was flagged."""
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, truth = observations(cam, spec)
+    tick = 1 / 64
+    coarse = [
+        (math.floor(t / tick) * tick, o if o is None else replace(o, t=math.floor(t / tick) * tick))
+        for t, o in obs
+    ]
+    m, _ = run(coarse, spec)
+    assert len(m.drops) == 3
+    for d, t in zip(m.drops, truth.drops, strict=True):
+        assert d.rebound_cm == pytest.approx(corrected(t), rel=0.005)
+        assert d.floor_cm == 0.0
+        assert d.warnings == ()
+
+
+@pytest.mark.parametrize("shift_cm", [-15.0, 15.0])
+def test_a_camera_that_moved_after_the_holds_is_flagged(shift_cm):
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, _ = observations(synth.Camera.framing(H, 8.0), spec)
+    clean, _ = run(obs, spec)
+    cal, after = clean.calibration, clean.drops[0].t_apex + 0.4  # bumped after the 1st drop
+    px = shift_cm * cal.px_per_cm(cal.rows[0])  # rows grow downward: + is lower in the picture
+    moved = [
+        (t, o if o is None or t < after else replace(o, cy=o.cy + px, bottom=o.bottom + px))
+        for t, o in obs
+    ]
+    m, _ = run(moved, spec)
+    assert len(m.drops) == 3
+    assert not any("did the camera move" in w for w in m.drops[0].warnings)
+    for d in m.drops[1:]:
+        assert any("did the camera move" in w for w in d.warnings)
+        assert d.floor_cm * shift_cm < 0  # lower in the picture reads as below the floor
+
+
 def test_second_bounce_is_not_a_drop():
     spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=2, catch_bounce=2)
     obs, truth = observations(synth.Camera.framing(H), spec)

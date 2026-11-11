@@ -22,6 +22,7 @@ recomputed (``RefinedEvent``). A live session can be recalibrated part way
 (the camera moved); each drop keeps the calibration it was measured with.
 """
 
+import math
 import statistics
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -29,6 +30,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 BALL_DIAMETER_CM = 6.7
+GRAVITY_CM_S2 = 981.0
 
 
 @dataclass(frozen=True)
@@ -55,13 +57,22 @@ class Settings:
     impact_guard_s: float = 0.03  # samples this close to impact are left out of fits
     apex_band: float = 0.35  # the apex fit uses the top 35% of the rise
     apex_exit_r: float = 1.0  # fallen this far past the apex: the rise is over
+    apex_exit_frames: int = 2  # ... on this many frames in a row (one bad edge isn't a fall)
     post_apex_s: float = 0.25  # or this long after the apex
     max_gap_s: float = 0.3  # a longer gap in the ball's track abandons a drop
     min_rebound_speed: float = 0.3  # rise speed / fall speed at impact; below: not a bounce
     release_warn_cm: float = 2.0
     floor_warn_cm: float = 3.0
-    fit_warn_r: float = 0.15  # fit residual (rms) above this many radii gets a warning
+    fit_warn_r: float = 0.15  # fall or rise fit residual (rms) above this many radii: a warning
+    # The apex fit's own limit. A 30 fps webcam's edges and frame times scatter the
+    # top of the flight by 0.1-0.7 radii rms on drops whose heights checked out to
+    # ~0.5 cm, so only a wrong track (a hand, another object) goes past this.
+    apex_warn_r: float = 0.8
     width_warn: float = 0.15  # ball width off what the scale predicts by more than this
+    # ... or wider by more than this with a 3-hold calibration: a camera looking up or
+    # down at the drop shortens heights in the picture but not widths, so the ball
+    # always looks wider than the vertical scale predicts (1 / cos of the angle).
+    width_warn_wide: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -132,11 +143,15 @@ class Drop:
     apex_row: float
     rebound_cm: float  # corrected for the actual release height when calibrated
     release_cm: float | None  # actual release height (calibrated only)
-    floor_cm: float | None  # where the bounce floor maps to; ~0 if the camera didn't move
+    # Calibrated only: how far the floor must have moved in the picture to explain
+    # the lowest point seen at the bounce (0 when it fits the floor hold). See _floor_cm.
+    floor_cm: float | None
     method: str  # "projective", "linear" (2-hold) or "self" (per-drop, level camera)
     fit_rms_r: dict  # fit residuals in ball radii: fall, floor_rise, apex
     samples: dict  # sample counts: fall, rise, apex
     warnings: tuple[str, ...]
+    low_row: float  # the lowest point seen at the bounce
+    low_gap_s: float  # the longest frame interval next to it
 
 
 @dataclass(frozen=True)
@@ -183,6 +198,30 @@ def _quad_slope(c: np.ndarray, t: float, t0: float) -> float:
     return float(c[1] + 2 * c[2] * x)
 
 
+def _floor_cm(
+    cal: Calibration, low_row: float, gap_s: float, release_cm: float, apex_cm: float
+) -> float:
+    """How far the floor must have moved to explain the lowest point seen at a bounce.
+
+    The ball can't go below the floor. Nor can the lowest frame catch it far above:
+    the impact falls between two frames ``gap_s`` apart, one on the way down at
+    speed ``v_in`` and one on the way up at ``v_out`` (from the release and apex
+    heights), and the lower of them is at most ``gap_s * v_in * v_out / (v_in +
+    v_out)`` up. So the floor lies between ``low - reach`` and ``low``: 0 if the
+    floor hold's level is in that range, else the nearer end.
+
+    Extrapolating the fall and rise fits to where they meet would be sharper, but
+    on a real webcam session it was off by 10-40 cm: frame times jitter with the
+    clock, the rise has only a handful of frames below the apex at 30 fps, and a
+    wide-angle lens bends heights near the picture's edge, where the floor is.
+    """
+    low = cal.height_cm(low_row)
+    v_in = math.sqrt(2 * GRAVITY_CM_S2 * max(release_cm, 0.0))
+    v_out = math.sqrt(2 * GRAVITY_CM_S2 * max(apex_cm, 0.0))
+    reach = gap_s * v_in * v_out / (v_in + v_out) if v_in + v_out > 0 else 0.0
+    return min(max(0.0, low - reach), low)
+
+
 class Measurer:
     """Feed observations in time order; collect events. See the module docstring."""
 
@@ -213,6 +252,7 @@ class Measurer:
         self._rest: tuple[float, float] | None = None  # (t, row) where it last sat still
         self._extreme: tuple[float, float] | None = None  # (t, row) lowest / highest point
         self._impact: tuple[float, float] | None = None
+        self._past_apex = 0  # frames in a row past the apex by apex_exit_r
         self._last_t: float | None = None
 
     # --- public ----------------------------------------------------------------------
@@ -298,14 +338,15 @@ class Measurer:
 
     def _recompute(self, d: Drop, cal: Calibration) -> Drop:
         release_cm = cal.height_cm(d.release_row)
-        floor_cm = cal.height_cm(d.floor_row)
         apex_cm = cal.height_cm(d.apex_row)
+        floor_cm = _floor_cm(cal, d.low_row, d.low_gap_s, release_cm, apex_cm)
         kept = [w for w in d.warnings if not w.startswith(("released at", "bounce floor"))]
         return replace(
             d,
             rebound_cm=apex_cm * self.drop_height_cm / release_cm,
             release_cm=release_cm,
             floor_cm=floor_cm,
+            floor_row=cal.row_for(floor_cm),
             warnings=tuple(kept + self._height_warnings(release_cm, floor_cm)),
         )
 
@@ -416,6 +457,7 @@ class Measurer:
         self._samples = []
         self._extreme = None
         self._impact = None
+        self._past_apex = 0
 
     def _step_drop(self, t: float, row: float, radius: float, still: bool, events: list) -> None:
         s = self.s
@@ -462,7 +504,13 @@ class Measurer:
         assert self._extreme is not None
         if row < self._extreme[1]:
             self._extreme = (t, row)
-        past_apex = row - self._extreme[1] > s.apex_exit_r * radius
+        # A single frame whose edge lands low (a mark on the wall, a hand) mustn't end
+        # the rise before the ball gets to the top: that cut one real drop 10 cm short.
+        if row - self._extreme[1] > s.apex_exit_r * radius:
+            self._past_apex += 1
+        else:
+            self._past_apex = 0
+        past_apex = self._past_apex >= s.apex_exit_frames
         if past_apex or still or t - self._extreme[0] > s.post_apex_s:
             self._finalize(events)
 
@@ -481,7 +529,9 @@ class Measurer:
     ) -> list[tuple[float, float]]:
         """Points in the top band, symmetric about the highest one seen. A catch
         soon after the apex freezes the ball, so trailing points that leave the
-        parabola are trimmed one by one."""
+        parabola are trimmed one by one; then a stray point anywhere (one frame
+        whose edge was misplaced by a ball radius or more) is dropped. Ordinary
+        scatter is left alone: trimming it moved good drops by up to 0.8 cm."""
         before = [(t, r) for t, r in rise if r < band_row and t <= t_top]
         if not before:
             return []
@@ -497,7 +547,22 @@ class Measurer:
             if abs(_quad_eval(fit[0], t_last, t_top) - r_last) <= max(tol, 3 * fit[1]):
                 break
             after.pop()
-        return before + after
+        pts = before + after
+        while len(pts) > 5:
+            fit = _quad_fit([t for t, _ in pts], [r for _, r in pts], t_top)
+            if fit is None:
+                break
+            off = [abs(_quad_eval(fit[0], t, t_top) - r) for t, r in pts]
+            worst = off.index(max(off))
+            rest = pts[:worst] + pts[worst + 1 :]
+            refit = _quad_fit([t for t, _ in rest], [r for _, r in rest], t_top)
+            if refit is None:
+                break
+            t_w, r_w = pts[worst]
+            if abs(_quad_eval(refit[0], t_w, t_top) - r_w) <= max(radius, 4 * refit[1]):
+                break
+            pts = rest
+        return pts
 
     def _measure(self) -> Drop | None:
         """Fit the fall, the start of the rise and the apex; None if it wasn't a bounce.
@@ -563,30 +628,49 @@ class Measurer:
         t_apex = t_top - c[1] / (2 * c[2])
         apex_z = _quad_eval(c, t_apex, t_top)
 
+        # The frame interval next to the lowest point seen bounds how far above the
+        # floor that point can be (see _floor_cm).
+        times = [t for t, _ in self._samples]
+        i = times.index(t_imp)
+        near = times[max(i - 1, 0) : i + 2]
+        gaps = [b - a for a, b in zip(near, near[1:], strict=False)]
+        low_gap = min(max(gaps, default=s.max_gap_s), s.max_gap_s)
+
+        # Only fits the rebound depends on can make it rough: with a calibration that
+        # is the apex alone; without one, the floor (from the fall and rise fits) too.
         warnings: list[str] = []
-        if not roots:
+        if cal is None and not roots:
             warnings.append("fall and rise fits don't meet: floor taken at the lowest point seen")
         if len(fall) < 4 or len(low_rise) < 4 or len(top) < 5:
             warnings.append("few frames: the fit may be rough")
+        if not any(t > t_apex for t, _ in top):
+            warnings.append("no frames after the top: the rebound may read low")
         rms = {
             "fall": fall_fit[1] / radius_z,
             "floor_rise": rise_fit[1] / radius_z,
             "apex": apex_fit[1] / radius_z,
         }
-        if max(rms.values()) > s.fit_warn_r:
-            worst = max(rms, key=rms.get)
+        rough = [k for k in ("fall", "floor_rise") if cal is None and rms[k] > s.fit_warn_r]
+        if rms["apex"] > s.apex_warn_r:
+            rough.append("apex")
+        if rough:
+            worst = max(rough, key=rms.get)
             warnings.append(f"{worst} fit is rough ({rms[worst]:.2f} ball radii rms)")
 
         h = self.drop_height_cm
         release_cm = floor_cm = None
+        wide_ok = s.width_warn
         if cal is not None:
-            release_cm, floor_cm, apex_cm = -release_z, -floor_z, -apex_z
+            release_cm, apex_cm = -release_z, -apex_z
+            floor_cm = _floor_cm(cal, imp_row, low_gap, release_cm, apex_cm)
             floor_row, apex_row = cal.row_for(floor_cm), cal.row_for(apex_cm)
             rebound = apex_cm * h / release_cm if release_cm > 0 else apex_cm
             method = cal.method
             warnings += self._height_warnings(release_cm, floor_cm)
             if cal.method == "linear":
                 warnings.append("calibrated without a mid mark: assumes a level camera")
+            else:
+                wide_ok = s.width_warn_wide
             expected_w = BALL_DIAMETER_CM * cal.px_per_cm(apex_row)
         else:
             floor_row, apex_row = floor_z, apex_z
@@ -594,7 +678,7 @@ class Measurer:
             method = "self"
             warnings.append("no calibration holds: assumes a level camera")
             expected_w = BALL_DIAMETER_CM * (floor_row - release_row) / h
-        if abs(2 * radius / expected_w - 1) > s.width_warn:
+        if not -s.width_warn <= 2 * radius / expected_w - 1 <= wide_ok:
             warnings.append(
                 f"ball looks {2 * radius:.0f} px wide; the scale predicts {expected_w:.0f}"
             )
@@ -616,6 +700,8 @@ class Measurer:
             fit_rms_r=rms,
             samples={"fall": len(fall), "rise": len(low_rise), "apex": len(top)},
             warnings=tuple(warnings),
+            low_row=imp_row,
+            low_gap_s=low_gap,
         )
 
 

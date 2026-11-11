@@ -94,7 +94,9 @@ class CameraSource:
         ok, frame = self._cap.read()
         if not ok:
             return None
-        return time.monotonic(), frame
+        # perf_counter, not monotonic: before Python 3.13, monotonic ticks every
+        # 15.6 ms on Windows, half a frame at 30 fps and ~10 cm of a falling ball.
+        return time.perf_counter(), frame
 
     def close(self) -> None:
         self._cap.release()

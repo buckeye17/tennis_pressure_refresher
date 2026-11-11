@@ -128,7 +128,12 @@ class Result:
                     "floor_cm": d.floor_cm,
                     "method": d.method,
                     "times": {"release": d.t_release, "impact": d.t_impact, "apex": d.t_apex},
-                    "rows": {"release": d.release_row, "floor": d.floor_row, "apex": d.apex_row},
+                    "rows": {
+                        "release": d.release_row,
+                        "floor": d.floor_row,
+                        "apex": d.apex_row,
+                        "lowest_seen": d.low_row,
+                    },
                     "fit_rms_r": d.fit_rms_r,
                     "samples": d.samples,
                     "warnings": list(d.warnings),

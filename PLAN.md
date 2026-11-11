@@ -372,8 +372,9 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - Each drop is release (at rest, then accelerating down) → impact (the lowest point, where it reverses) → rise → apex. Later bounces and the catch are ignored until the next release.
 - Fit parabolas y(t) to the ball's bottom: one to the fall (release to just before impact), one to the rise (just after impact to just past the apex).
   - **release** = vertex of the fall parabola, or the resting level if the hand hid the start;
-  - **floor** = where the fall and rise parabolas meet;
+  - **floor** = where the fall and rise parabolas meet (used for the rebound only without calibration holds; with them the floor is known, and the lowest point seen checks that the camera didn't move, below);
   - **apex** = vertex of the rise parabola.
+- The rise ends when the ball is a radius below its highest point on **two frames in a row**, and a single frame far off the apex parabola is left out of the fit. One bad edge (a mark on the wall behind the ball) once ended a real rise early and read the drop 10 cm low.
 - **Height calibration.** Along the drop line, image position maps to height by a 1-D projective map: three numbers, which absorb camera tilt and distance. The three calibration holds (floor = 0, mid mark, drop height) fix it exactly.
   - A tilted camera matters: without this, each degree of tilt adds about 0.5 cm of error at a typical apex (5° ≈ 2.4 cm for a 6 ft drop, 10° ≈ 4.9 cm), and laptop screens usually lean back 10–20°.
 - **Parabolas are fitted in centimetres, not rows**, when calibrated. Through a tilted camera a fall isn't a parabola in rows; fitting rows put the floor 2 cm off at 15° tilt.
@@ -382,13 +383,15 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - **No calibration holds** (e.g. an old clip): fall back to the linear self-calibration from each drop's own release and floor, **rebound = drop height × (floor − apex) / (floor − release)** in pixels. This is exact only for a level camera, so the review warns about it.
 - Only heights are calibrated; times are used just for the shape of each fit, so slow motion is fine.
 - The calibration is per session, so the camera must not move after the holds. If the floor or release positions drift, the tool asks for new holds (live) or warns (clip).
+  - **The floor check** uses the lowest point seen at each bounce. The ball can't be below the floor, and the lowest frame can't catch it higher than `gap × v_in × v_out / (v_in + v_out)` (the frame interval at the impact, and the speeds from the release and apex heights). The drop's `floor_cm` is how far the floor must have moved to fit that range, 0 if it fits the floor hold, and over 3 cm gets the warning. At 30 fps a move of 3–12 cm may go unflagged on any one drop, but not on every drop.
+  - Not the fits: on the first real webcam session (30 fps, camera on the floor looking up, wide-angle) the fall and rise fits met 6–43 cm below the floor on every drop while the camera stayed put to 0.15 px. The webcam's frame times ticked in 15.6 ms steps (Python's `time.monotonic` on Windows before 3.13; webcams are now timed with `perf_counter`), only 4–6 frames of the rise lie below the apex band, and even evenly spaced times left the floor 8–15 cm low, so heights near the picture's edge are probably bent by the lens too.
 - Drops are assigned to balls in order: drops-per-ball each, starting at ball 1.
 
-**Warnings shown in review** (in the laptop app):
-- parabola fit residuals too large;
-- too few frames on either side;
-- release not seen;
-- ball width in pixels more than 15% off what the drop's own scale predicts (6.7 cm across);
+**Warnings shown in review** (in the laptop app), only for what can move the rebound:
+- fit residuals too large: the apex fit over 0.8 ball radii rms (a 30 fps webcam scatters it by 0.1–0.7 on drops that checked out to ~0.5 cm); the fall and rise fits over 0.15 only without calibration holds, when the floor they give feeds the rebound;
+- too few frames on either side, or none after the top;
+- release more than 2 cm off the mark; the floor moved (above);
+- ball width in pixels more than 15% narrower than the scale predicts (6.7 cm across), or wider by 15% (level-camera methods) or 50% (three holds): a camera looking up or down shortens heights in the picture but not widths, so with tilt the ball always looks wider, by 1 / cos of the angle;
 - rebound outside 30–80% of the drop height.
 
 **Expected precision**, for a 1080p portrait clip of a 6 ft drop:
@@ -908,6 +911,8 @@ Next, in order. Data collection comes first because it takes the longest:
      - `tests/test_video_app.py` (12 tests): a full live session through the synthetic camera (preview stream, holds, drops, undo, finish, review edits, the JSON, re-analysis of the recording), pick and recalibrate, clip upload and analysis with a re-analysis by clicked colour, bad uploads, Pi states, recalibration and undo in the measurer. Plus a compression-jitter test in `tests/test_video.py`.
      - Checked in the browser with the demo camera: framing, the live prompts and drop list, Undo, Finish, review edits, Analyse again with a clicked colour, and a failed upload. Not yet tried with a real webcam.
   3. Tune on real footage: the user's phone clips in `samples/` and webcam sessions. Record the results in §13.
+     - First webcam session (2026-11-11: 9 balls × 3 drops, 200.66 cm drop onto wood, webcam on its side on the floor looking up, 30 fps delivered of 60 asked): every drop was flagged, all falsely, and one drop read 101.8 cm against ~111.5 cm in its track. Fixed: the floor check, the fit and width warnings, the two-frame end of the rise and the stray-point trim (§6.3), and `perf_counter` frame times. Replaying the recording's track now leaves only true warnings (two releases 2.2 cm high). Tests: one bad frame near the apex, a 15.6 ms clock with a wide-angle camera looking up 30°, and a camera bumped 15 cm either way.
+     - Checks on that session: the background moved under 0.15 px in 12 minutes; the fall speeds imply a 200 cm drop; the curvature near the apex is ~8% above g, which with the mid mark ~10 cm below the apexes means up to ~1 cm at the apex. Open: the third drop of each ball read ~2 cm higher than the first on 8 of 9 balls, with the same release height and impact speed.
      - Also check: real recording sizes (the ~100 MB per 3 minutes estimate), and whether re-analysed recordings stay within 0.5%.
      - One random synthetic setup (−4° tilt, 60 fps, 720p landscape) reaches 0.60%, with or without the step 2 changes. Look at it here too.
   4. Pi side:

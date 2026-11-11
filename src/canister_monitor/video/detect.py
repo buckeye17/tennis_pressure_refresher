@@ -5,6 +5,7 @@ dropped. The ball is picked up as the first yellow blob that **moves**, so a
 yellow thing sitting still in the background is ignored, and from then on it
 is tracked as the blob nearest where it should be. Holding the ball still
 doesn't lose it: tracking only needs it to stay put or move continuously.
+Blobs too narrow to be a ball are ignored, unless the user clicked one.
 
 Frames are analysed at about ``analysis_height`` rows; results are reported
 in pixels of the original frame.
@@ -50,6 +51,16 @@ class Candidate:
     fill: float  # area / bounding box area: ~0.79 for a disc
 
 
+# The narrowest a ball may be to get picked up, as a fraction of the frame's height: a
+# 6.7 cm ball in a picture 3.7 m tall at the drop line. The drop has to fit in the
+# picture, so a real ball is rarely smaller, and yellowish specks in a room are.
+# Clicking the ball overrides this, for a camera set further back.
+MIN_BALL_FRAC = 0.018
+# A ball being followed may look narrower than that (a hand or a leg covers part of it),
+# but not by this much: without a limit, following slides from a ball onto a speck.
+FOLLOW_SHRINK = 0.75
+
+
 class BallDetector:
     def __init__(
         self,
@@ -58,12 +69,15 @@ class BallDetector:
         start_point: tuple[float, float] | None = None,
         min_radius_px: float = 3.0,
         lost_after_s: float = 0.6,
+        min_ball_frac: float = MIN_BALL_FRAC,
     ) -> None:
         self.analysis_height = analysis_height
         self.color = color or ColorRange()
         self.start_point = start_point  # --pick: pick up the blob nearest this first
         self.min_radius_px = min_radius_px
         self.lost_after_s = lost_after_s
+        self.min_ball_frac = min_ball_frac
+        self._clicked = False  # the user chose this blob, so it may be any size
         self.track: deque[Observation] = deque(maxlen=3)
         self.last_seen: Observation | None = None  # kept after the track is lost
         self._past: deque[tuple[float, list[Candidate]]] = deque()  # for spotting motion
@@ -72,9 +86,22 @@ class BallDetector:
     def forget(self) -> None:
         """Drop everything tied to positions in the picture; the colour stays."""
         self.start_point = None
+        self._clicked = False
         self.track.clear()
         self.last_seen = None
         self._past.clear()
+
+    def restart_clock(self, t0: float) -> None:
+        """Make ``t0`` time zero, keeping what has been seen.
+
+        A live session's clock restarts at Start. Every age here is a difference
+        of times, so history left on the old clock would look like the future:
+        the track would never expire, and nothing could be found again.
+        """
+        self.track = deque((replace(o, t=o.t - t0) for o in self.track), maxlen=self.track.maxlen)
+        if self.last_seen is not None:
+            self.last_seen = replace(self.last_seen, t=self.last_seen.t - t0)
+        self._past = deque((tp - t0, cands) for tp, cands in self._past)
 
     def candidates(self, frame: np.ndarray, t: float) -> list[Candidate]:
         """Ball-shaped yellow blobs, in original-frame pixels."""
@@ -120,7 +147,10 @@ class BallDetector:
 
         if self.track and t - self.track[-1].t > self.lost_after_s:
             self.track.clear()
-        pick = self._follow(cands, t) if self.track else self._acquire(cands, t)
+        min_width = self.min_ball_frac * frame.shape[0]
+        if not self._clicked and self.start_point is None:
+            cands = [c for c in cands if c.obs.width >= FOLLOW_SHRINK * min_width]
+        pick = self._follow(cands, t) if self.track else self._acquire(cands, t, min_width)
         if pick is None:
             return None
         obs = pick.obs
@@ -153,10 +183,11 @@ class BallDetector:
                 best, best_d = c, d
         return best
 
-    def _acquire(self, cands: list[Candidate], t: float) -> Candidate | None:
+    def _acquire(self, cands: list[Candidate], t: float, min_width: float) -> Candidate | None:
         if self.start_point is not None and cands:
             x, y = self.start_point
             self.start_point = None
+            self._clicked = True
             return min(cands, key=lambda c: np.hypot(c.obs.cx - x, c.obs.cy - y))
         last = self.last_seen
         if last is not None and t - last.t <= 3.0:
@@ -169,8 +200,15 @@ class BallDetector:
             ]
             if near:
                 return min(near, key=lambda c: np.hypot(c.obs.cx - last.cx, c.obs.cy - last.cy))
-        moving = [c for c in cands if c.fill >= 0.6 and not self._was_here(c, t)]
-        return max(moving, key=lambda c: c.area) if moving else None
+        moving = [
+            c
+            for c in cands
+            if c.fill >= 0.6 and c.obs.width >= min_width and not self._was_here(c, t)
+        ]
+        if not moving:
+            return None
+        self._clicked = False
+        return max(moving, key=lambda c: c.area)
 
     def _was_here(self, c: Candidate, t: float) -> bool:
         """True if a blob sat at this spot throughout the last ~0.4 s: not moving."""

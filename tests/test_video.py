@@ -10,7 +10,10 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
+import numpy as np  # noqa: E402
+
 from canister_monitor.video import cli, measure, pipeline, synth  # noqa: E402
+from canister_monitor.video.detect import BallDetector  # noqa: E402
 from canister_monitor.video.measure import Measurer, Observation, fit_calibration  # noqa: E402
 
 H = 182.88  # 72 in
@@ -21,6 +24,44 @@ SMALL = {"width": 360, "height": 640}  # renders faster; still ~6 px ball radius
 def corrected(truth_drop: dict) -> float:
     """The rebound the tool should report: scaled to a release exactly at the mark."""
     return truth_drop["rebound_cm"] * H / truth_drop["release_cm"]
+
+
+# --- finding the ball -------------------------------------------------------------------
+
+BALL_R, SPECK_R = 20, 7  # in a 1280-row frame: 40 px wide passes the size limit, 14 px doesn't
+
+
+def disc(x: int, y: int, r: int) -> np.ndarray:
+    frame = np.full((1280, 720, 3), 120, np.uint8)
+    cv2.circle(frame, (x, y), r, synth.BALL_BGR, -1, cv2.LINE_AA)
+    return frame
+
+
+def test_a_moving_speck_is_not_picked_up_but_a_ball_is():
+    det = BallDetector()
+    for i in range(30):
+        assert det.detect(disc(100 + 8 * i, 300, SPECK_R), i / 30) is None
+    seen = [det.detect(disc(100 + 8 * i, 700, BALL_R), (30 + i) / 30) for i in range(30)]
+    assert any(o is not None for o in seen)
+
+
+def test_following_does_not_slide_from_a_ball_onto_a_speck():
+    det = BallDetector()
+    i = 0
+    for i in range(30):
+        last = det.detect(disc(300, 200 + 8 * i, BALL_R), i / 30)
+    assert last is not None
+    # Each step is small enough to look like the same ball; the end result isn't one.
+    for r in range(BALL_R, SPECK_R - 1, -1):
+        i += 1
+        last = det.detect(disc(300, 440, r), i / 30)
+    assert last is None
+
+
+def test_a_clicked_ball_may_be_small():
+    det = BallDetector(start_point=(300.0, 400.0))
+    seen = [det.detect(disc(300, 400, SPECK_R), i / 30) for i in range(10)]
+    assert all(o is not None for o in seen)
 
 
 # --- calibration maths ------------------------------------------------------------------

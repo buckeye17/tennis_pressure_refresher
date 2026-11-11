@@ -359,6 +359,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 **Finding the ball** (`video/detect.py`).
 - Each frame is scaled to about 640 px tall.
 - Optic-yellow pixels (HSV range) are grouped into blobs, and blobs of the wrong shape are dropped. The ball is picked up as the first yellow blob that **moves**, so a yellow thing sitting still in the background is ignored. From then on it's tracked as the blob nearest where it should be.
+- Blobs narrower than 1.8% of the frame's height aren't picked up (a ball in a picture 3.7 m tall at the drop line), and a followed blob is dropped below 75% of that. Real rooms have yellowish specks that flicker, which looks like motion; without the second limit, following slides from a ball onto one. Clicking the ball overrides both, for a camera set further back.
 - The default yellow range can be replaced by clicking the ball: in the app's preview, or with `--pick` on the command line.
 - Per frame: centre, width, and the **bottom edge to a fraction of a pixel**. Down a strip through the ball's centre, in the full-resolution frame, each row's colour is placed between the ball's colour and the background's; the edge is where it crosses halfway.
   - Motion blur smears an edge symmetrically, so the halfway point is where the ball was at mid-exposure. One measure therefore serves a ball at rest and one in flight.

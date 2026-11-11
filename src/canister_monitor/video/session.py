@@ -710,6 +710,7 @@ class LiveRun(Run):
                 if self.phase == "live":
                     if self._t0 is None:
                         self._t0 = t
+                        self.detector.restart_clock(t)
                     t -= self._t0
                     assert self.recorder is not None
                     self.recorder.put(t, frame)

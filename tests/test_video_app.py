@@ -335,6 +335,47 @@ def test_sideways_camera_measures_once_rotated(tmp_path):
     assert (doc["analysis"]["video"]["width"], doc["analysis"]["video"]["height"]) == (360, 640)
 
 
+class MonotonicClockCamera:
+    """A webcam's clock (large, not starting at 0) and a yellow blob seen before Start
+    that then leaves, as a passing false detection does. After Start, a ball moves
+    somewhere else in the picture."""
+
+    name = "clocked"
+    width, height, fps = 360, 640, 30.0
+    drops_when_late = False
+
+    def __init__(self) -> None:
+        self.i = 0
+        self.began: int | None = None
+
+    def start(self) -> None:
+        self.began = self.i
+
+    def read(self):
+        time.sleep(0.002)
+        self.i += 1
+        frame = np.full((self.height, self.width, 3), 120, np.uint8)
+        if self.began is None:
+            centre = (40 + 4 * (self.i % 60), 120)
+        else:
+            centre = (300, 300 + 3 * ((self.i - self.began) % 60))
+        cv2.circle(frame, centre, 14, synth.BALL_BGR, -1, cv2.LINE_AA)
+        return 500000.0 + self.i / self.fps, frame
+
+    def close(self) -> None:
+        pass
+
+
+def test_ball_is_found_after_start_when_something_was_tracked_before_it(tmp_path):
+    _, client = make_client(tmp_path, {"c": MonotonicClockCamera})
+    client.post("/api/camera", json={"key": "c"})
+    wait_for(client, lambda s: s["ball_seen"])
+
+    assert client.post("/api/start", json=PARAMS).get_json()["phase"] == "live"
+    wait_for(client, lambda s: s["frames"]["ball_found"] > 10)
+    client.post("/api/close")
+
+
 def test_camera_opens_with_a_saved_rotation(tmp_path):
     cam = synth.Camera.framing(H, **SMALL)
     spec = synth.SessionSpec(cor=(0.74,), drops_per_ball=1)

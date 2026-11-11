@@ -324,6 +324,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 **Camera placement (both modes).**
 - Steady, at least 2–3 m from the drop line, framing the whole drop height and the floor, with the drop path near the middle of the frame. Bright light (less blur at impact); a background that isn't yellow helps, and one darker than the ball is better still: video files store colour at half resolution, which blurs an edge that differs from its background mostly in colour (see 8b.2 step 2).
 - A webcam is landscape. To cover a 6 ft drop it needs about 3 m of distance with the camera about 1 m up; a 100 in drop needs about 4 m with the camera about 1.3 m up.
+- A webcam can instead be turned on its side, which puts its long edge along the drop. **Rotate picture** in the app (0, 90° either way, 180°, before Start, remembered per camera) stands the picture upright, and every later step sees only the upright frames.
 - A phone: portrait, 1× lens (not the ultrawide), 1080p, 60 fps if available. Slow motion works but isn't needed.
 - Tilt is corrected by the height calibration below, so a laptop screen leaning back is fine.
 
@@ -889,6 +890,7 @@ Next, in order. Data collection comes first because it takes the longest:
        - The prompt follows the holds: each hold advances it as soon as it's long enough. If holds don't line up, it says so and starts again from the floor.
        - Warnings: below 25 fps; not calibrated; the floor moved, so recalibrate.
      - `video/sources.py`: webcams through DirectShow on Windows (asked for MJPG 1280×720 at 60 fps), probed at indices 0–4. `synth.SyntheticCamera` renders a session paced to the wall clock, and its session begins on Start.
+     - Rotation: `LiveRun` turns each frame as the analysis thread takes it, so analysis, preview, drop pictures and the recording are all upright, and a recording re-analyses as an ordinary clip. It can change only while framing (`POST /api/rotate`), since turning the picture mid-session would invalidate the calibration. Clips aren't rotated: OpenCV applies a phone's orientation tag when it reads them.
      - `video/pi.py`: `GET /api/bounce` with `urllib`.
        - The set-up lists active batches and the setups.
        - The test kind is guessed as on the dashboard.

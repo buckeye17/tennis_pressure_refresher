@@ -10,11 +10,14 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
+import numpy as np  # noqa: E402
+
 from canister_monitor.video import synth  # noqa: E402
 from canister_monitor.video.app import create_app  # noqa: E402
 from canister_monitor.video.measure import Measurer, Observation  # noqa: E402
 from canister_monitor.video.pi import PiClient, PiError  # noqa: E402
 from canister_monitor.video.session import Params, ReviewDrop  # noqa: E402
+from canister_monitor.video.sources import rotated  # noqa: E402
 
 H = 182.88  # 72 in
 MID = 91.44  # 36 in
@@ -262,6 +265,85 @@ def test_pick_and_recalibrate_and_close(tmp_path):
     st = client.post("/api/close").get_json()
     assert st == {"session": None, "phase": "idle"}
     assert client.post("/api/command/finish").status_code == 404
+
+
+class SidewaysCamera:
+    """A synthetic camera turned on its side, so real down is at the picture's left."""
+
+    def __init__(self, inner: synth.SyntheticCamera) -> None:
+        self.inner = inner
+        self.name = "sideways"
+        self.width, self.height, self.fps = inner.height, inner.width, inner.fps
+        self.drops_when_late = inner.drops_when_late
+
+    def start(self) -> None:
+        self.inner.start()
+
+    def read(self):
+        t, frame = self.inner.read()
+        return t, cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+
+    def close(self) -> None:
+        self.inner.close()
+
+
+def test_rotated_turns_the_picture_clockwise():
+    frame = np.zeros((2, 3), np.uint8)
+    frame[1, 0] = 255  # bottom left
+    assert rotated(frame, 0) is frame
+    assert rotated(frame, 90)[0, 0] == 255 and rotated(frame, 90).shape == (3, 2)
+    assert rotated(frame, 180)[0, 2] == 255
+    assert rotated(frame, 270)[2, 1] == 255 and rotated(frame, 270).shape == (3, 2)
+
+
+def test_sideways_camera_measures_once_rotated(tmp_path):
+    cam = synth.Camera.framing(H, 8.0, **SMALL)
+    spec = synth.SessionSpec(cor=(0.74,), drops_per_ball=2, seed=5)
+    made: list[synth.SyntheticCamera] = []
+
+    def camera():
+        made.append(synth.SyntheticCamera(cam, spec, speed=8.0))
+        return SidewaysCamera(made[-1])
+
+    _, client = make_client(tmp_path, {"side": camera})
+    st = client.post("/api/camera", json={"key": "side"}).get_json()
+    assert (st["source"]["width"], st["source"]["height"]) == (640, 360)
+
+    for bad in (45, True, "90", None):
+        assert client.post("/api/rotate", json={"rotation": bad}).status_code == 400
+    st = client.post("/api/rotate", json={"rotation": 270}).get_json()
+    assert st["source"]["rotation"] == 270
+    assert (st["source"]["width"], st["source"]["height"]) == (360, 640)
+
+    st = client.post("/api/start", json=PARAMS).get_json()
+    assert st["phase"] == "live"
+    assert client.post("/api/rotate", json={"rotation": 0}).status_code == 400
+
+    wait_for(client, lambda s: len(s["drops"]) == 2)
+    st = client.post("/api/command/finish").get_json()
+    drops = st["review"]["drops"]
+    assert len(drops) == 2
+    for d, t in zip(drops, made[0].truth.drops, strict=True):
+        assert d["measured_cm"] == pytest.approx(corrected(t), rel=0.005)
+
+    # The recording is upright, so it re-analyses without knowing about the rotation.
+    video = cv2.VideoCapture(str(tmp_path / "recordings" / st["file"]))
+    ok, frame = video.read()
+    video.release()
+    assert ok and frame.shape[:2] == (640, 360)
+    doc = json.loads(client.get("/api/review.json").data)
+    assert (doc["analysis"]["video"]["width"], doc["analysis"]["video"]["height"]) == (360, 640)
+
+
+def test_camera_opens_with_a_saved_rotation(tmp_path):
+    cam = synth.Camera.framing(H, **SMALL)
+    spec = synth.SessionSpec(cor=(0.74,), drops_per_ball=1)
+    _, client = make_client(tmp_path, {"s": lambda: synth.SyntheticCamera(cam, spec, speed=2.0)})
+    assert client.post("/api/camera", json={"key": "s", "rotation": 45}).status_code == 400
+    st = client.post("/api/camera", json={"key": "s", "rotation": 90}).get_json()
+    assert st["source"]["rotation"] == 90
+    assert (st["source"]["width"], st["source"]["height"]) == (640, 360)
+    client.post("/api/close")
 
 
 def test_camera_that_fails_to_open(tmp_path):

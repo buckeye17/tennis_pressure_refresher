@@ -146,10 +146,17 @@ def create_app(
 
     @app.post("/api/camera")
     def open_camera_route():
-        key = body().get("key")
+        b = body()
+        key = b.get("key")
         if not isinstance(key, str):
             raise ApiError("key must be text")
-        call(controller.camera, key)
+        call(controller.camera, key, b.get("rotation", 0))
+        return state()
+
+    @app.post("/api/rotate")
+    def rotate():
+        rotation = body().get("rotation")
+        call(lambda: controller.current().command("rotate", rotation=rotation))
         return state()
 
     @app.post("/api/start")

@@ -77,6 +77,18 @@
           <div id="prompt-warn" class="warn" hidden></div>
         </div>
         <div id="live-status" class="status small"></div>
+        <div id="rotation-field" hidden>
+          <label>Rotate picture
+            <select id="rotation">
+              <option value="0">No rotation</option>
+              <option value="270">90° left (counterclockwise)</option>
+              <option value="90">90° right (clockwise)</option>
+              <option value="180">180°</option>
+            </select>
+          </label>
+          <p class="muted small">If the camera is on its side, turn the picture until the floor is
+            at the bottom.</p>
+        </div>
         <div id="framing-actions" class="actions">
           <button id="start" class="primary" type="button">Start session</button>
           <button id="close-camera" type="button">Close camera</button>

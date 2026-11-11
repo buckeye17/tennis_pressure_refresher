@@ -35,12 +35,14 @@
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* private window */ }
   };
   prefs.mid = prefs.mid || {};
+  prefs.rotation = prefs.rotation || {}; // per camera
 
   const ui = {
     units: prefs.units || null, // null until the Pi says, then "in" or "cm"
     pi: null,
     state: { phase: "idle", session: null },
     previewSession: null,
+    cameraKey: null,
     reviewKey: null,
     liveKey: null,
     busy: false,
@@ -221,7 +223,10 @@
       const cams = await api("GET", `/api/cameras${refresh ? "?refresh=1" : ""}`);
       box.replaceChildren(...cams.map((c) => el("button", {
         type: "button",
-        onclick: () => act(() => api("POST", "/api/camera", { key: c.key })),
+        onclick: () => {
+          ui.cameraKey = c.key;
+          act(() => api("POST", "/api/camera", { key: c.key, rotation: prefs.rotation[c.key] || 0 }));
+        },
       }, el("span", {}, c.label), el("span", { class: "muted small" }, `${c.width}×${c.height}`))));
       if (!cams.length) box.append(el("p", { class: "muted small" }, "No webcam found."));
     } catch (e) {
@@ -322,6 +327,8 @@
     }
 
     const src = st.source || {};
+    $("#rotation-field").hidden = phase !== "framing";
+    if (phase === "framing" && document.activeElement !== $("#rotation")) $("#rotation").value = src.rotation ?? 0;
     const bits = [];
     if (st.kind === "camera") {
       bits.push(el("span", {}, `${src.width}×${src.height}`));
@@ -484,6 +491,11 @@
     $("#start").addEventListener("click", () => {
       const p = params();
       if (p) act(() => api("POST", "/api/start", p));
+    });
+    $("#rotation").addEventListener("change", (e) => {
+      const rotation = +e.target.value;
+      if (ui.cameraKey != null) { prefs.rotation[ui.cameraKey] = rotation; savePrefs(); }
+      act(() => api("POST", "/api/rotate", { rotation }));
     });
     $("#close-camera").addEventListener("click", () => act(() => api("POST", "/api/close")));
     document.querySelectorAll("[data-cmd]").forEach((b) => b.addEventListener("click", () => {

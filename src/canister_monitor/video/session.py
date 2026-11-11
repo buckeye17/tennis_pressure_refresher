@@ -30,7 +30,7 @@ from canister_monitor.bounce import summarize
 from canister_monitor.video.detect import BallDetector, ColorRange, sample_color
 from canister_monitor.video.measure import HoldEvent
 from canister_monitor.video.pipeline import TOOL, Analyzer, VideoInfo, open_clip, times_path
-from canister_monitor.video.sources import FrameSource
+from canister_monitor.video.sources import FrameSource, check_rotation, rotated
 
 log = logging.getLogger(__name__)
 
@@ -563,9 +563,12 @@ class LiveRun(Run):
 
     kind = "camera"
 
-    def __init__(self, run_id: int, recordings: Path, source: FrameSource) -> None:
+    def __init__(
+        self, run_id: int, recordings: Path, source: FrameSource, rotation: int = 0
+    ) -> None:
         super().__init__(run_id, recordings)
         self.source = source
+        self.rotation = rotation  # applied to each frame before anything else sees it
         self.phase = "framing"
         self.fps: float | None = None  # measured
         self.skipped = 0  # frames the analysis couldn't keep up with
@@ -580,9 +583,15 @@ class LiveRun(Run):
         for t in self._threads:
             t.start()
 
+    def _size(self) -> tuple[int, int]:
+        """The picture's width and height after rotation."""
+        src = self.source
+        return (src.height, src.width) if self.rotation in (90, 270) else (src.width, src.height)
+
     def state(self) -> dict:
         out = super().state()
         src = self.source
+        width, height = self._size()
         warn = None
         if self.fps is not None and self.fps < FPS_WARN:
             warn = (
@@ -591,8 +600,9 @@ class LiveRun(Run):
             )
         out["source"] = {
             "name": src.name,
-            "width": src.width,
-            "height": src.height,
+            "width": width,
+            "height": height,
+            "rotation": self.rotation,
             "fps_nominal": src.fps,
             "fps": self.fps,
             "fps_warning": warn,
@@ -695,6 +705,7 @@ class LiveRun(Run):
                         self._fail(f"Camera: {why}")
                     return
                 t, frame = item
+                frame = rotated(frame, self.rotation)
                 self._last_frame = frame
                 if self.phase == "live":
                     if self._t0 is None:
@@ -718,12 +729,19 @@ class LiveRun(Run):
 
     # --- commands --------------------------------------------------------------------
 
+    def _cmd_rotate(self, rotation: object) -> None:
+        if self.phase != "framing":
+            raise ValueError("the picture can only be rotated before Start")
+        self.rotation = check_rotation(rotation)
+        self.detector.forget()
+        self._obs = None
+
     def _cmd_start(self, params: Params) -> None:
         if self.phase != "framing":
             raise ValueError("already started")
         self.params = params
         src = self.source
-        info = VideoInfo("camera", src.name, src.width, src.height, src.fps, 0)
+        info = VideoInfo("camera", src.name, *self._size(), src.fps, 0)
         self.analyzer = Analyzer(
             info, params.drop_height_cm, params.mid_mark_cm, params.drops_per_ball, self.detector
         )
@@ -847,11 +865,12 @@ class Controller:
             self.run = run
             return run
 
-    def camera(self, key: str) -> Run:
+    def camera(self, key: str, rotation: object = 0) -> Run:
+        turn = check_rotation(rotation)
         with self._lock:
             self.close()  # a camera can't be opened twice
             source = self.open_camera(key)  # raises ValueError if it can't
-            return self._replace(lambda i: LiveRun(i, self.recordings, source))
+            return self._replace(lambda i: LiveRun(i, self.recordings, source, turn))
 
     def clip(self, path: Path, params: Params, color: ColorRange | None = None) -> Run:
         return self._replace(lambda i: ClipRun(i, self.recordings, path, params, color))

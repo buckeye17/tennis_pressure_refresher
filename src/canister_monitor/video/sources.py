@@ -18,6 +18,27 @@ import numpy as np
 WANT_WIDTH, WANT_HEIGHT, WANT_FPS = 1280, 720, 60
 PROBE_INDICES = range(5)  # OpenCV can't list cameras by name, so indices are tried
 
+# Degrees clockwise to turn a camera's picture so that real down is at the bottom.
+# Turning a webcam on its side puts its long edge along the drop.
+ROTATIONS = {
+    0: None,
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+
+
+def check_rotation(rotation: object) -> int:
+    """The rotation if it's one of ``ROTATIONS``. Raises ValueError."""
+    if isinstance(rotation, bool) or not isinstance(rotation, int) or rotation not in ROTATIONS:
+        raise ValueError("rotation must be 0, 90, 180 or 270 degrees")
+    return rotation
+
+
+def rotated(frame: np.ndarray, rotation: int) -> np.ndarray:
+    turn = ROTATIONS[rotation]
+    return frame if turn is None else cv2.rotate(frame, turn)
+
 
 class FrameSource(Protocol):
     name: str

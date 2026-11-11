@@ -69,6 +69,13 @@ class BallDetector:
         self._past: deque[tuple[float, list[Candidate]]] = deque()  # for spotting motion
         self._kernel = np.ones((3, 3), np.uint8)
 
+    def forget(self) -> None:
+        """Drop everything tied to positions in the picture; the colour stays."""
+        self.start_point = None
+        self.track.clear()
+        self.last_seen = None
+        self._past.clear()
+
     def candidates(self, frame: np.ndarray, t: float) -> list[Candidate]:
         """Ball-shaped yellow blobs, in original-frame pixels."""
         h0, w0 = frame.shape[:2]

@@ -206,7 +206,7 @@ def test_pi_client_reports_an_unreachable_pi():
 def test_page_and_idle_state(tmp_path):
     _, client = make_client(tmp_path)
     page = client.get("/")
-    assert page.status_code == 200 and b"Bounce video" in page.data
+    assert page.status_code == 200 and b"Ball Bounce Tracker" in page.data
     assert client.get("/static/video.js").status_code == 200
     assert client.get("/api/state").get_json() == {"session": None, "phase": "idle"}
 

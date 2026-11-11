@@ -332,7 +332,7 @@ def test_cli_json_and_debug(tmp_path, capsys):
     )
     assert code == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["tool"].startswith("canister-video")
+    assert out["tool"].startswith("ball-bounce-tracker")
     assert out["calibration"]["method"] == "projective"
     assert [d["ball_no"] for d in out["drops"]] == [1, 1]
     for d, t in zip(out["drops"], truth.drops, strict=True):

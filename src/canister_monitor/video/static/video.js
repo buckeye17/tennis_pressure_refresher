@@ -1,11 +1,12 @@
-/* canister-video laptop app. Plain JS, no build step. The server does the capture
- * and analysis; this page shows its state, sends commands, and converts lengths
- * (the API speaks cm) for display. */
+/* Ball Bounce Tracker, the laptop app. Plain JS, no build step.
+ * The server does the capture and analysis; this page shows its state, sends
+ * commands, and converts lengths (the API speaks cm) for display. */
 (() => {
   "use strict";
 
   const POLL_MS = 250;
-  const PREFS_KEY = "canister-video-prefs";
+  const PREFS_KEY = "ball-bounce-tracker-prefs";
+  const OLD_PREFS_KEY = "canister-video-prefs";  // before the rename: read if the new key is unset
   const CM_PER_IN = 2.54;
   const CONTEXT_LABELS = {
     new: "New balls", before: "Before refill", after: "After refill",
@@ -29,7 +30,10 @@
   // --- preferences (per browser; conveniences only) ------------------------------
 
   const prefs = (() => {
-    try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; }
+    try {
+      const saved = localStorage.getItem(PREFS_KEY) ?? localStorage.getItem(OLD_PREFS_KEY);
+      return JSON.parse(saved) || {};
+    } catch { return {}; }
   })();
   const savePrefs = () => {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* private window */ }

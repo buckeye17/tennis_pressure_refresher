@@ -309,7 +309,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 
 **Mass-balance cross-check** (needs canister volume and ball count). The canister pressure drop not explained by the leak gives ΔP_ball (§6.1); the bounce tests give ΔB / b. If the two disagree consistently, the leak calibration or the volumes are off. Diagnostic only.
 
-### 6.3 Video bounce measurement (Phase 8b.2, laptop web app `canister-video`)
+### 6.3 Video bounce measurement (Phase 8b.2, laptop web app Ball Bounce Tracker: `ball-bounce-tracker`)
 
 **Goal:** measure every drop of a bounce test from video, instead of reading heights by eye. The video can be a clip recorded on the phone, or live from the laptop's built-in webcam or an external one. Manual entry stays; the two can be mixed.
 
@@ -334,8 +334,8 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 
 **Dropping.** Each session starts with three short **calibration holds**: hold a ball still for about 2 s resting on the floor, then against the mid mark, then with its bottom at the drop-height mark. After that, release each ball with its bottom at the drop-height mark, in number order, the same number of times each (default 3), and catch it after its first bounce.
 
-**The laptop web app** (`video/app.py`).
-- `canister-video` with no arguments starts a small Flask server on the laptop and opens it in the browser. It listens on `http://127.0.0.1:5100`, the laptop only (`--port`). `--pi URL` sets the Pi (default `http://canisters.local:5000`); `--no-browser` skips opening the browser.
+**The laptop web app, Ball Bounce Tracker** (`video/app.py`).
+- `ball-bounce-tracker` with no arguments starts a small Flask server on the laptop and opens it in the browser. It listens on `http://127.0.0.1:5100`, the laptop only (`--port`). `--pi URL` sets the Pi (default `http://canisters.local:5000`); `--no-browser` skips opening the browser.
 - One session at a time. A background worker runs capture and analysis (`pipeline.Analyzer`, the same code as for clips). The page polls `/api/state` a few times a second for status, drops and progress, and shows the preview from `/preview.mjpg`.
 - **1. Set up.** The page shows whether the Pi is reachable. Pick the batch and setup from the Pi's lists; drop height and mid mark come from the setup. Drops per ball defaults to 3.
 - **2. Source.**
@@ -354,7 +354,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
   - Per-ball medians update as you go.
   - **Save to Pi** creates the bounce test, `source = video`, with the analysis details and pictures, in one request.
   - If the Pi can't be reached, the session is kept in `recordings/<time>.json` and can be sent from the app later.
-- The **command line** stays for scripting and debugging: `canister-video CLIP --drop-height 72in --mid-mark 36in --dry-run [--json] [--debug DIR]`.
+- The **command line** stays for scripting and debugging: `ball-bounce-tracker CLIP --drop-height 72in --mid-mark 36in --dry-run [--json] [--debug DIR]`.
 
 **Finding the ball** (`video/detect.py`).
 - Each frame is scaled to about 640 px tall.
@@ -442,7 +442,7 @@ ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark bet
 
 `filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures.
 
-**Install** (laptop only): the `video` extra, with `uv sync --all-extras` (dev tools too), then `uv run canister-video`; or `uv run --extra video canister-video` on its own. This adds OpenCV and NumPy and the `canister-video` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
+**Install** (laptop only): the `video` extra, with `uv sync --all-extras` (dev tools too), then `uv run ball-bounce-tracker`; or `uv run --extra video ball-bounce-tracker` on its own. This adds OpenCV and NumPy and the `ball-bounce-tracker` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
 
 **Testing.**
 - `video/synth.py` renders artificial clips with cv2.VideoWriter: a yellow ball with known physics (including air drag), motion blur, noise, a cluttered background, the hand at release, a second bounce and a catch, calibration holds, a camera tilted up to 20°, and an occasional dropped frame.
@@ -729,9 +729,9 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │   │   ├── measure.py            # split into drops, fit parabolas, rebound heights
 │   │   ├── synth.py              # artificial test clips
 │   │   ├── pipeline.py           # Analyzer: frames in, numbered drops and pictures out
-│   │   ├── app.py                # the laptop web app (Flask): sessions, preview, review
+│   │   ├── app.py                # Ball Bounce Tracker, the laptop web app (Flask): sessions, preview, review
 │   │   ├── templates/, static/   # its page
-│   │   └── cli.py                # canister-video: start the app, or analyze a clip
+│   │   └── cli.py                # ball-bounce-tracker: start the app, or analyze a clip
 │   ├── collector.py
 │   ├── simulate.py
 │   ├── decoders/
@@ -879,7 +879,7 @@ Next, in order. Data collection comes first because it takes the longest:
 
   Checked on desktop and at 375 px phone width.
 - **8b.2 — Video measurement** (§6.3), in order:
-  1. *(done)* Analysis core (`video/detect.py`; `video/measure.py` as a streaming state machine with the three-point calibration), the synthetic clip generator, and `canister-video CLIP --dry-run` printing results. No Pi needed.
+  1. *(done)* Analysis core (`video/detect.py`; `video/measure.py` as a streaming state machine with the three-point calibration), the synthetic clip generator, and `ball-bounce-tracker CLIP --dry-run` printing results. No Pi needed.
 
      As built:
      - `video/pipeline.py` (`Analyzer`: frames in, numbered drops and pictures out; shared by clips and the coming live mode) and `video/cli.py`. Flags: `--drop-height`, `--mid-mark` (lengths with units, e.g. `72in`), `--drops-per-ball`, `--pick`, `--json`, `--debug DIR` (per-frame trace, result JSON, a picture per drop).
@@ -892,7 +892,7 @@ Next, in order. Data collection comes first because it takes the longest:
      - Tests use Flask's test client and a synthetic camera.
 
      As built:
-     - `canister-video` with no clip serves the app (werkzeug, threaded, `127.0.0.1` only). Flags: `--port`, `--pi`, `--no-browser`, `--recordings DIR`, and `--demo-camera`, which offers a synthetic 720p camera filming a made-up session (3 balls, 3 drops each, 72 in / 36 in), so the app can be tried without a webcam.
+     - `ball-bounce-tracker` with no clip serves the app (werkzeug, threaded, `127.0.0.1` only). Flags: `--port`, `--pi`, `--no-browser`, `--recordings DIR`, and `--demo-camera`, which offers a synthetic 720p camera filming a made-up session (3 balls, 3 drops each, 72 in / 36 in), so the app can be tried without a webcam.
      - `video/session.py`: `Controller` (one session at a time), `LiveRun` and `ClipRun`, `Recorder`, `Review`.
        - A live session has three threads. One reads the camera and timestamps frames on arrival; it drops frames, and counts them, if analysis falls more than 2 s behind. One analyses, draws the preview (12 fps) and runs the page's commands, so only it touches the analyzer. One writes the recording.
        - Phases: `framing` (preview only) → `live` (after Start: analysis and recording) → `review`. A clip goes `analysing` → `review`.
@@ -981,7 +981,7 @@ Next, in order. Data collection comes first because it takes the longest:
 9. Decoders must never raise on bad input.
 10. When protocol facts are confirmed or corrected, update §5 and §13 of this file in the same change.
 11. Small, focused commits with messages that reference the phase (e.g. `phase-2: add reading heartbeat policy`).
-12. **Run Python through uv** (`uv run pytest`, `uv run --extra video canister-video`, `uv sync`), never `.venv/bin/...`, bare `python`, or `pip`. The exception is the Pi's service venv, which `deploy/install.sh` builds with pip.
+12. **Run Python through uv** (`uv run pytest`, `uv run --extra video ball-bounce-tracker`, `uv sync`), never `.venv/bin/...`, bare `python`, or `pip`. The exception is the Pi's service venv, which `deploy/install.sh` builds with pip.
 
 ---
 

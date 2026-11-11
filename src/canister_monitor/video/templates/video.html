@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bounce video</title>
+  <title>Ball Bounce Tracker</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='video.css') }}">
 </head>
 <body>
   <header class="top">
-    <h1>Bounce video</h1>
+    <h1>Ball Bounce Tracker</h1>
     <div class="top-right">
       <span id="pi-status" class="pill">Pi: checking…</span>
       <button id="pi-retry" class="link" type="button" hidden>Retry</button>
@@ -194,7 +194,7 @@
     </form>
   </dialog>
 
-  <footer class="foot muted small">canister-video {{ version }} · on this laptop only</footer>
+  <footer class="foot muted small">Ball Bounce Tracker {{ version }} · on this laptop only</footer>
   <script src="{{ url_for('static', filename='video.js') }}"></script>
 </body>
 </html>

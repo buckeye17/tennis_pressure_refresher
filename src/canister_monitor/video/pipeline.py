@@ -22,7 +22,7 @@ from canister_monitor.video.measure import (
     Settings,
 )
 
-TOOL = f"canister-video {__version__}"
+TOOL = f"ball-bounce-tracker {__version__}"
 BUFFER_S = 1.2  # recent frames kept for drop pictures (a drop ends <~0.6 s after its apex)
 PREVIEW_ROWS = 640  # buffered frames are shrunk to this height
 

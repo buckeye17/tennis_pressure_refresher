@@ -1,5 +1,5 @@
-"""The laptop web app for video bounce tests (PLAN.md 6.3): ``canister-video`` with
-no arguments.
+"""Ball Bounce Tracker, the laptop web app for video bounce tests (PLAN.md 6.3):
+``ball-bounce-tracker`` with no arguments.
 
 It serves a page on this laptop only (http://127.0.0.1:5100). The browser is
 just the screen: capture and analysis run here, in ``session.Controller``. The
@@ -364,7 +364,7 @@ def serve(
         print(f"error: can't listen on port {port}: {e}")
         return 2
     url = f"http://127.0.0.1:{port}"
-    print(f"canister-video: {url} (Ctrl+C to stop). Recordings go to {recordings.resolve()}")
+    print(f"ball-bounce-tracker: {url} (Ctrl+C to stop). Recordings go to {recordings.resolve()}")
     if open_browser:
         threading.Timer(0.5, webbrowser.open, (url,)).start()
     try:

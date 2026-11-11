@@ -1,8 +1,8 @@
-"""canister-video: measure bounce-test drops from video (PLAN.md section 6.3).
+"""ball-bounce-tracker: measure bounce-test drops from video (PLAN.md section 6.3).
 
-    canister-video                 the laptop web app: webcam or phone clip,
+    ball-bounce-tracker            the laptop web app: webcam or phone clip,
                                    review, then the test for the Pi
-    canister-video CLIP --drop-height 72in --mid-mark 36in --dry-run
+    ball-bounce-tracker CLIP --drop-height 72in --mid-mark 36in --dry-run
                                    measure a clip and print the drops
 
 Start each session with the three calibration holds (ball still for ~2 s on
@@ -21,7 +21,7 @@ from pathlib import Path
 try:
     import cv2
 except ImportError:  # e.g. on the Pi, where the video extra is never installed
-    sys.exit('canister-video needs the laptop-only video extra: pip install -e ".[video]"')
+    sys.exit('ball-bounce-tracker needs the laptop-only video extra: pip install -e ".[video]"')
 
 from canister_monitor.video.detect import BallDetector, ColorRange, sample_color  # noqa: E402
 from canister_monitor.video.pipeline import Result, analyze_clip, open_clip  # noqa: E402
@@ -138,7 +138,9 @@ def write_debug(result: Result, trace: list, folder: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="canister-video", description=__doc__, formatter_class=argparse.RawTextHelpFormatter
+        prog="ball-bounce-tracker",
+        description=__doc__,
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     ap.add_argument(
         "clip", type=Path, nargs="?", help="video file of a bounce test; without one, the app"

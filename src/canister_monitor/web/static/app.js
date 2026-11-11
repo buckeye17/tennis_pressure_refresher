@@ -586,8 +586,28 @@
   function testLine(t) {
     const s = t.summary;
     const spread = s.sd_cm != null ? ` ±${toLen(s.sd_cm).toFixed(1)}` : "";
+    const k = s.drops_fit?.outliers || 0;
     return `${fmtDate(t.ts)} · ${CONTEXT_SHORT[t.context] || t.context} · average ${fmtLen(s.mean_cm)}${spread}`
-      + ` · ${s.balls} ball${s.balls === 1 ? "" : "s"}`;
+      + ` · ${s.balls} ball${s.balls === 1 ? "" : "s"}`
+      + (k ? ` · ${misfits(k)}` : "");
+  }
+
+  const misfits = (k) => (k === 1 ? "1 drop doesn't fit the others" : `${k} drops don't fit the others`);
+
+  /** "Ball 6, drop 2: 101.8 cm, 4.3 sd below the other drops" for each outlier of a test. */
+  function outlierLines(t) {
+    const fit = t.summary.drops_fit;
+    const seen = new Map();
+    const lines = [];
+    for (const d of t.drops) {
+      const n = (seen.get(d.ball_no) || 0) + 1;
+      seen.set(d.ball_no, n);
+      if (d.outlier_z == null) continue;
+      const off = d.rebound_cm - fit.mean_cm;
+      lines.push(`Ball ${d.ball_no}, drop ${n}: ${fmtLen(d.rebound_cm)}, ${Math.abs(d.outlier_z).toFixed(1)} sd `
+        + `${off < 0 ? "below" : "above"} the other drops (${fmtLen(fit.mean_cm)} ±${toLen(fit.sd_cm).toFixed(1)})`);
+    }
+    return lines;
   }
 
   function batchCard(b) {
@@ -636,7 +656,13 @@
           el("td", { class: "num" }, t.temp_c == null ? "—" : toTemp(t.temp_c).toFixed(tDigits)),
           el("td", { class: "num" }, t.summary.mean_cm == null ? "—" : toLen(t.summary.mean_cm).toFixed(1)),
           el("td", { class: "num muted" }, t.summary.sd_cm == null ? "—" : `±${toLen(t.summary.sd_cm).toFixed(1)}`),
-          el("td", { class: "num" }, t.summary.balls),
+          el("td", { class: "num" }, t.summary.balls, ...(() => {
+            const lines = outlierLines(t);
+            return lines.length ? [el("span", {
+              class: "flag", role: "img", title: lines.join("\n"),
+              "aria-label": `${misfits(lines.length)}: ${lines.join("; ")}`,
+            }, " ⚠")] : [];
+          })()),
           el("td", { class: "row-actions" },
             el("button", { type: "button", class: "link", onclick: () => openTest(b, t) }, "Edit"),
             el("button", {
@@ -923,6 +949,7 @@
         el("output", { class: "median" }, "—"))));
     $("#test-error").textContent = "";
     f.dataset.dirty = "";
+    outlierNote = "";
     updateTestSummary();
     $("#test-dialog").showModal();
   }
@@ -935,20 +962,65 @@
     const drop = toLen(setupById(Number($("#test-setup").value))?.drop_cm ?? Infinity);
     for (const row of document.querySelectorAll("#test-grid .ball-row")) {
       const vals = [];
+      const inputs = [];
       for (const input of row.querySelectorAll("input")) {
         const empty = input.value.trim() === "";
         const v = parseNum(input.value);
         const ok = empty || (v > 0 && v <= drop + 1e-6);
         input.setAttribute("aria-invalid", String(!ok));
         if (!ok) bad++;
-        else if (!empty) vals.push(v);
+        else if (!empty) { vals.push(v); inputs.push(input); }
       }
-      rows.push({ ball: Number(row.dataset.ball), vals, row });
+      rows.push({ ball: Number(row.dataset.ball), vals, inputs, row });
     }
     return { rows, bad };
   }
 
-  function updateTestSummary() {
+  // Drops that don't fit the others, checked by the Pi (bounce.fit_normal) a moment
+  // after typing stops. Only a hint: a test with outliers saves like any other.
+  let outlierTimer = null;
+  let outlierSeq = 0;
+  let outlierNote = "";
+
+  function scheduleOutlierCheck() {
+    clearTimeout(outlierTimer);
+    outlierTimer = setTimeout(checkOutliers, 300);
+  }
+
+  async function checkOutliers() {
+    const { rows } = readGrid();
+    const cells = rows.flatMap((r) => r.vals.map((v, i) => ({ v, input: r.inputs[i] })));
+    const seq = ++outlierSeq;
+    let res;
+    try {
+      res = await api("/api/bounce/outliers", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rebounds_cm: cells.map((c) => fromLen(c.v)) }),
+      });
+    } catch (_) {
+      return; // the Pi is unreachable: saving will say so
+    }
+    if (seq !== outlierSeq) return; // typed again since
+    for (const input of document.querySelectorAll("#test-grid input")) {
+      input.classList.remove("outlier");
+      input.removeAttribute("title");
+    }
+    const fit = res.drops_fit;
+    let k = 0;
+    cells.forEach((c, i) => {
+      const z = res.outlier_z[i];
+      if (z == null) return;
+      k++;
+      c.input.classList.add("outlier");
+      c.input.title = `${Math.abs(z).toFixed(1)} sd ${z < 0 ? "below" : "above"} the other drops `
+        + `(${fmtLen(fit.mean_cm)} ±${toLen(fit.sd_cm).toFixed(1)}): a typo?`;
+    });
+    outlierNote = k ? ` · ${misfits(k)} (highlighted): a typo?` : "";
+    updateTestSummary(false);
+  }
+
+  function updateTestSummary(recheck = true) {
+    if (recheck) scheduleOutlierCheck();
     const { rows, bad } = readGrid();
     const meds = [];
     for (const r of rows) {
@@ -962,7 +1034,7 @@
     const problems = bad ? ` · ${bad} box${bad === 1 ? " needs" : "es need"} fixing` : "";
     $("#test-summary").textContent = n
       ? `${n} ball${n === 1 ? "" : "s"} · average ${mean.toFixed(1)} ${state.lengthUnit}`
-        + `${sd != null ? ` · spread ±${sd.toFixed(1)}` : ""}${problems}`
+        + `${sd != null ? ` · spread ±${sd.toFixed(1)}` : ""}${outlierNote}${problems}`
       : `No drops entered yet${problems}.`;
   }
 

@@ -389,6 +389,15 @@
     $("#review-mean").textContent = s.balls
       ? `Average ${fmt(s.mean_cm)} over ${s.balls} ball${s.balls > 1 ? "s" : ""}${s.sd_cm != null ? ` (± ${fmt(s.sd_cm)})` : ""}`
       : "No drops kept.";
+    const fit = s.drops_fit;
+    let fitText = "";
+    if (fit) {
+      const k = fit.outliers;
+      fitText = `Drops: ${fmt(fit.mean_cm)} ± ${fmt(fit.sd_cm)} over ${fit.drops - k} kept` + (!fit.tested
+        ? ", too few to check for outliers."
+        : k ? `, leaving out ${k} outlier${k > 1 ? "s" : ""} (highlighted).` : "; no outliers.");
+    }
+    $("#review-fit").textContent = fitText;
 
     const key = `${st.session}|${rev.version}|${units()}`;
     if (key === ui.reviewKey) return;
@@ -410,7 +419,16 @@
         },
       });
       setInputCm(height, d.edited_cm ?? d.height_cm);
-      return el("tr", { class: [d.kept ? null : "rejected", i && d.ball_no !== rev.drops[i - 1].ball_no ? "newball" : null].filter(Boolean).join(" ") || null },
+      const notes = d.warnings.map((w) => el("li", {}, w));
+      if (d.outlier_z != null && fit) {
+        const off = d.height_cm - fit.mean_cm;
+        notes.unshift(el("li", { class: "outlier" },
+          `Outlier: ${fmt(Math.abs(off))} ${off < 0 ? "below" : "above"} the other drops' average ` +
+          `(${Math.abs(d.outlier_z).toFixed(1)} sd). Check the picture: correct the height or untick Keep.`));
+      }
+      const rowClass = [d.kept ? null : "rejected", d.outlier_z != null ? "outlier" : null,
+        i && d.ball_no !== rev.drops[i - 1].ball_no ? "newball" : null].filter(Boolean).join(" ") || null;
+      return el("tr", { class: rowClass },
         el("td", {}, d.image
           ? el("img", { src: `/api/drops/${d.seq}.jpg?s=${st.session}`, alt: `Drop ${d.seq + 1}`, loading: "lazy", onclick: (e) => showPicture(e.target.src) })
           : el("span", { class: "muted small" }, "no picture")),
@@ -420,7 +438,7 @@
           ? el("button", { class: "link small", type: "button", title: "Use the measurement", onclick: () => edit(d.seq, { edited_cm: null }) }, " ↺")
           : null, d.edited_cm != null ? el("span", { class: "tag" }, "edited") : null),
         el("td", { class: "keep" }, el("input", { type: "checkbox", checked: d.kept, "aria-label": "Keep this drop", "data-focus": `k${d.seq}`, onchange: (e) => edit(d.seq, { kept: e.target.checked }) })),
-        el("td", {}, d.warnings.length ? el("ul", {}, ...d.warnings.map((w) => el("li", {}, w))) : null),
+        el("td", {}, notes.length ? el("ul", {}, ...notes) : null),
       );
     }));
     if (focused) tbody.querySelector(`[data-focus="${focused}"]`)?.focus();

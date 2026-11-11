@@ -10,7 +10,7 @@ from datetime import datetime
 from flask import Blueprint, Response, jsonify, request
 
 from canister_monitor import db
-from canister_monitor.bounce import CM_PER_IN, CONTEXTS, ITF_DROP_CM, summarize
+from canister_monitor.bounce import CM_PER_IN, CONTEXTS, ITF_DROP_CM, outlier_json, summarize
 from canister_monitor.web import get_db
 from canister_monitor.web.api import ApiError, _ctx
 
@@ -113,6 +113,7 @@ def _rebound(value: object, name: str, drop_cm: float) -> float:
 
 def _test_json(t: db.BounceTest) -> dict:
     s = summarize((d.ball_no, d.rebound_cm) for d in t.drops)
+    flags, fit = outlier_json([d.rebound_cm for d in t.drops])
     return {
         "id": t.id,
         "ts": t.ts,
@@ -120,14 +121,30 @@ def _test_json(t: db.BounceTest) -> dict:
         "context": t.context,
         "temp_c": t.temp_c,
         "note": t.note,
-        "drops": [{"ball_no": d.ball_no, "rebound_cm": d.rebound_cm} for d in t.drops],
+        "drops": [
+            {"ball_no": d.ball_no, "rebound_cm": d.rebound_cm, "outlier_z": z}
+            for d, z in zip(t.drops, flags, strict=True)
+        ],
         "summary": {
             "balls": s.balls,
             "mean_cm": s.mean_cm,
             "sd_cm": s.sd_cm,
             "medians": [{"ball_no": b, "rebound_cm": m} for b, m in s.medians.items()],
+            "drops_fit": fit,  # a normal distribution of the drops, outliers left out
         },
     }
+
+
+@bounce_api.post("/api/bounce/outliers")
+def check_outliers():
+    """Flag drops that don't fit the others, for the test form as it's typed in.
+    Nothing is stored. Body: {"rebounds_cm": [...]}, in any order."""
+    values = _body({"rebounds_cm"}, {"rebounds_cm"})["rebounds_cm"]
+    if not isinstance(values, list) or len(values) > MAX_DROPS:
+        raise ApiError(f"rebounds_cm must be a list of up to {MAX_DROPS} numbers")
+    cm = [_number(v, "rebounds_cm", 0.0, MAX_CM) for v in values]
+    flags, fit = outlier_json(cm)
+    return {"outlier_z": flags, "drops_fit": fit}
 
 
 @bounce_api.get("/api/bounce")
@@ -399,6 +416,7 @@ CSV_COLUMNS = [
     "rebound_cm",
     "rebound_in",
     "note",
+    "outlier_z",  # blank unless the drop doesn't fit its test's others (bounce.fit_normal)
 ]
 
 
@@ -413,7 +431,8 @@ def export_bounce_csv():
     writer.writerow(CSV_COLUMNS)
     for t in db.list_tests(conn):
         b, s = batches[t.batch_id], setups[t.setup_id]
-        for d in t.drops:
+        flags, _ = outlier_json([d.rebound_cm for d in t.drops])
+        for d, z in zip(t.drops, flags, strict=True):
             writer.writerow(
                 [
                     datetime.fromtimestamp(t.ts).astimezone().isoformat(timespec="seconds"),
@@ -430,6 +449,7 @@ def export_bounce_csv():
                     f"{d.rebound_cm:.1f}",
                     f"{d.rebound_cm / CM_PER_IN:.2f}",
                     t.note or "",
+                    "" if z is None else f"{z:.2f}",
                 ]
             )
     stamp = datetime.fromtimestamp(_ctx()["clock"]()).strftime("%Y%m%d-%H%M")

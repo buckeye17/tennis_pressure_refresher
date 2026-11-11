@@ -337,7 +337,9 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
   background: var(--panel);
   padding: 4px 8px;
 }
+.ball-grid input.outlier { border-color: var(--stale); background: var(--stale-bg); }
 .ball-grid input[aria-invalid="true"] { border-color: var(--danger); outline-color: var(--danger); }
+.flag { color: var(--stale); cursor: help; }
 .ball-grid .median { color: var(--muted); font-variant-numeric: tabular-nums; }
 .test-summary { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 

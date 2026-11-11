@@ -5,6 +5,7 @@ extra; skipped where OpenCV isn't installed (e.g. on the Pi)."""
 import json
 import statistics
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +17,7 @@ from canister_monitor.video import synth  # noqa: E402
 from canister_monitor.video.app import create_app  # noqa: E402
 from canister_monitor.video.measure import Measurer, Observation  # noqa: E402
 from canister_monitor.video.pi import PiClient, PiError  # noqa: E402
-from canister_monitor.video.session import Params, ReviewDrop  # noqa: E402
+from canister_monitor.video.session import Params, Review, ReviewDrop  # noqa: E402
 from canister_monitor.video.sources import rotated  # noqa: E402
 
 H = 182.88  # 72 in
@@ -127,6 +128,56 @@ def test_review_drop_height_prefers_the_edit():
     assert d.height_cm == 100.0
     d.edited_cm = 98.0
     assert d.height_cm == 98.0
+
+
+# The first real webcam session (2026-11-11): 9 balls x 3 drops from 200.66 cm. Drop 17
+# was cut short by a bad frame; its track peaked near 111.5 cm.
+REAL_SESSION_CM = [
+    112.58, 111.75, 114.60, 111.98, 111.27, 113.16, 111.69, 111.33, 114.69,
+    109.90, 109.98, 112.65, 109.96, 108.24, 112.36, 110.08, 101.84, 112.40,
+    114.33, 111.82, 113.87, 107.62, 106.96, 110.34, 108.44, 107.99, 110.74,
+]  # fmt: skip
+
+
+def review_of(heights: list[float]) -> Review:
+    """A Review over made-up drops, without an analysis thread behind it."""
+    entries = [
+        (
+            i // 3 + 1,
+            SimpleNamespace(
+                seq=i, rebound_cm=h, release_cm=200.66, method="projective", warnings=()
+            ),
+        )
+        for i, h in enumerate(heights)
+    ]
+    analyzer = SimpleNamespace(result=SimpleNamespace(entries=entries, images={}))
+    return Review(analyzer, Params(drop_height_cm=200.66, mid_mark_cm=100.33))
+
+
+def test_review_flags_the_drop_that_does_not_fit_the_others():
+    rev = review_of(REAL_SESSION_CM)
+    out = rev.to_json()
+    flagged = {d["seq"]: d["outlier_z"] for d in out["drops"] if d["outlier_z"] is not None}
+    assert list(flagged) == [16]
+    assert flagged[16] == pytest.approx(-4.3, abs=0.1)
+    fit = out["summary"]["drops_fit"]
+    assert (fit["drops"], fit["outliers"], fit["tested"]) == (27, 1, True)
+    assert fit["mean_cm"] == pytest.approx(111.18, abs=0.01)  # without the outlier
+
+    rev.edit(16, {"edited_cm": 111.5})  # corrected to what its track showed
+    assert all(d["outlier_z"] is None for d in rev.to_json()["drops"])
+    rev.edit(16, {"edited_cm": None})
+    rev.edit(16, {"kept": False})  # or left out: it no longer counts, so isn't flagged
+    out = rev.to_json()
+    assert all(d["outlier_z"] is None for d in out["drops"])
+    assert out["summary"]["drops_fit"]["drops"] == 26
+
+
+def test_review_does_not_look_for_outliers_in_a_few_drops():
+    out = review_of([110.0, 111.0, 95.0]).to_json()
+    assert all(d["outlier_z"] is None for d in out["drops"])
+    assert out["summary"]["drops_fit"]["tested"] is False
+    assert review_of([]).to_json()["summary"]["drops_fit"] is None
 
 
 def test_pi_states(tmp_path):

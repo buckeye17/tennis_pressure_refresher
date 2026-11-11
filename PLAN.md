@@ -394,6 +394,12 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - ball width in pixels more than 15% narrower than the scale predicts (6.7 cm across), or wider by 15% (level-camera methods) or 50% (three holds): a camera looking up or down shortens heights in the picture but not widths, so with tilt the ball always looks wider, by 1 / cos of the angle;
 - rebound outside 30–80% of the drop height.
 
+**Outliers among a test's drops** (`bounce.fit_normal`; in the video review and on the dashboard). A normal distribution is fitted to the kept drops at their reviewed heights, and drops that don't belong to it are highlighted, with how far they are from the others' average. They stay kept: the user checks the picture, then corrects the height or unticks Keep, and the flags update after each edit. The summary shows the fit (mean ± sd, outliers left out), and the JSON carries each drop's `outlier_z` and the summary's `drops_fit`.
+- Test: Rosner's generalized ESD. Take out the drop furthest from the mean, refit, and repeat up to a fifth of the drops; the outliers are the most taken out whose distance beat the critical value. Refitting each time stops one bad drop from hiding another, and the critical values hold the chance of any false flag in a test at 5% (5–6% in simulation).
+- Fewer than 8 drops aren't checked. Standard library only, so the Pi can use it too: the t quantile comes from the normal one by the Cornish-Fisher expansion, within 0.3% of the table for 5+ degrees of freedom.
+- On the dashboard (any test, video or typed in): `/api/bounce` gives each drop's `outlier_z` and the test's `drops_fit`; the batch's latest-test line counts the outliers, and the tests table marks them (⚠, which names each drop on hover). The test form flags boxes as they're typed, through `POST /api/bounce/outliers` (nothing stored), so a slip like 11.5 for 111.5 shows before saving; a test with outliers saves like any other. The CSV has an `outlier_z` column.
+- Drops of all balls are pooled, so the spread includes ball-to-ball differences. On the first webcam session (27 drops) it flags only the drop cut short by a bad frame (101.8 cm, 4.3 sd below the others' 111.2 ± 2.2 cm); the next furthest is 1.95 sd out.
+
 **Expected precision**, for a 1080p portrait clip of a 6 ft drop:
 
 | Source of error | Size |

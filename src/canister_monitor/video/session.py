@@ -26,7 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from canister_monitor.bounce import summarize
+from canister_monitor.bounce import outlier_json, summarize
 from canister_monitor.video.detect import BallDetector, ColorRange, sample_color
 from canister_monitor.video.measure import HoldEvent
 from canister_monitor.video.pipeline import TOOL, Analyzer, VideoInfo, open_clip, times_path
@@ -170,11 +170,20 @@ class Review:
     def kept(self) -> list[ReviewDrop]:
         return [d for d in self.drops if d.kept]
 
+    def outliers(self) -> dict[int, float]:
+        """Kept drops that don't fit a normal distribution of the kept drops, at
+        their reviewed heights: seq -> z (sd from the others' mean). Flagged only;
+        the user decides whether to keep them."""
+        kept = self.kept()
+        flags, _ = outlier_json([d.height_cm for d in kept])
+        return {d.seq: z for d, z in zip(kept, flags, strict=True) if z is not None}
+
     def summary(self) -> dict:
         s = summarize((d.ball_no, d.height_cm) for d in self.kept())
         counts: dict[int, int] = {}
         for d in self.kept():
             counts[d.ball_no] = counts.get(d.ball_no, 0) + 1
+        _, fit = outlier_json([d.height_cm for d in self.kept()])
         return {
             "balls": s.balls,
             "mean_cm": s.mean_cm,
@@ -182,6 +191,7 @@ class Review:
             "medians": [
                 {"ball_no": b, "rebound_cm": m, "drops": counts[b]} for b, m in s.medians.items()
             ],
+            "drops_fit": fit,  # a normal distribution of the kept drops, outliers left out
         }
 
     def image(self, seq: int) -> bytes | None:
@@ -194,12 +204,14 @@ class Review:
 
     def to_json(self) -> dict:
         details = {d.seq: d for _, d in self.analyzer.result.entries}
+        outliers = self.outliers()
         return {
             "version": self.version,
             "drops": [
                 {
                     **asdict(d),
                     "height_cm": d.height_cm,
+                    "outlier_z": outliers.get(d.seq),
                     "release_cm": details[d.seq].release_cm,
                     "method": details[d.seq].method,
                     "warnings": list(details[d.seq].warnings),
@@ -216,6 +228,7 @@ class Review:
         p = self.params
         result = self.analyzer.result.to_json()
         detail = {d["seq"]: d for d in result["drops"]}
+        outliers = self.outliers()
         return {
             "tool": TOOL,
             "test": {
@@ -245,6 +258,7 @@ class Review:
                     "rebound_cm": d.measured_cm,
                     "kept": d.kept,
                     "edited_cm": d.edited_cm,
+                    "outlier_z": outliers.get(d.seq),
                     "detail": {k: v for k, v in detail[d.seq].items() if k != "ball_no"},
                     "image_jpeg": None
                     if (img := self.image(d.seq)) is None

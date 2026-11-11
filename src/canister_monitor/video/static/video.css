@@ -210,6 +210,8 @@ table.review input.edited { border-color: var(--accent); }
 table.review td.height { width: 12em; white-space: nowrap; }
 table.review select { padding: 3px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
 table.review ul { margin: 0; padding-left: 16px; color: var(--warn); font-size: 0.85rem; }
+table.review tr.outlier td { background: var(--warn-bg); }
+table.review li.outlier { font-weight: 600; }
 .tag { font-size: 0.75rem; color: var(--accent); margin-left: 4px; }
 
 /* --- dialogs ------------------------------------------------------------------------ */

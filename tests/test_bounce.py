@@ -1,6 +1,7 @@
 import csv
 import io
 import sqlite3
+import statistics
 
 import pytest
 
@@ -29,6 +30,51 @@ def test_summarize_edge_cases():
     assert bounce.summarize([]) == bounce.TestSummary(0, None, None, {})
     one = bounce.summarize([(3, 120.0), (3, 122.0)])
     assert (one.balls, one.mean_cm, one.sd_cm) == (1, 121.0, None)
+
+
+# --- outliers -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "p, df, table",
+    [(0.975, 10, 2.2281), (0.995, 6, 3.7074), (0.999, 5, 5.8934), (0.9995, 25, 3.7251)],
+)
+def test_t_quantile_matches_the_table(p, df, table):
+    assert bounce.t_quantile(p, df) == pytest.approx(table, rel=0.004)
+
+
+CLEAN = [140.2, 141.0, 139.1, 140.6, 138.8, 141.9, 140.0, 139.5, 140.9, 139.8, 141.3, 140.4]
+
+
+def test_fit_normal_flags_nothing_in_a_clean_test():
+    f = bounce.fit_normal(CLEAN)
+    assert f.tested and f.outliers == ()
+    assert f.mean == pytest.approx(statistics.fmean(CLEAN))
+    assert f.sd == pytest.approx(statistics.stdev(CLEAN))
+    assert max(abs(z) for z in f.z) < 2
+
+
+def test_fit_normal_flags_a_bad_drop_and_fits_without_it():
+    values = [*CLEAN[:5], 131.0, *CLEAN[5:]]
+    f = bounce.fit_normal(values)
+    assert f.outliers == (5,)
+    assert f.mean == pytest.approx(statistics.fmean(CLEAN))  # the bad drop is left out
+    assert f.z[5] < -5
+
+
+def test_fit_normal_finds_two_outliers_that_would_hide_each_other():
+    # Each alone inflates the spread enough that a one-at-a-time test misses the other.
+    values = [*CLEAN, 132.0, 132.5]
+    f = bounce.fit_normal(values)
+    assert sorted(f.outliers) == [12, 13]
+
+
+def test_fit_normal_with_few_or_equal_values():
+    assert bounce.fit_normal([140.0]) is None
+    few = bounce.fit_normal([140.0, 141.0, 120.0])
+    assert not few.tested and few.outliers == ()  # too few to tell
+    same = bounce.fit_normal([140.0] * 10)
+    assert same.outliers == () and same.sd == 0
 
 
 # --- storage --------------------------------------------------------------------------
@@ -336,3 +382,40 @@ def test_bounce_csv(seeded):
     assert [r["ball_no"] for r in rows] == ["1", "2"]
     assert rows[0]["rebound_in"] == "50.00"
     assert rows[0]["setup"] == "Garage, 6 ft" and rows[0]["context"] == "before"
+    assert rows[0]["outlier_z"] == ""
+
+
+# Ten balls x 3 drops, one typed as 41.1 instead of 141.1.
+TYPO_TEST = [(b, 140.0 + (b % 4) * 0.7 + i * 0.4) for b in range(1, 11) for i in range(3)]
+TYPO_TEST[13] = (5, 41.1)
+
+
+def test_a_test_flags_the_drop_that_does_not_fit(seeded):
+    client, setup, batch = seeded
+    drops = [{"ball_no": b, "rebound_cm": cm} for b, cm in TYPO_TEST]
+    body = {"batch_id": batch["id"], "setup_id": setup["id"], "context": "new", "drops": drops}
+    test = post(client, "/api/bounce/tests", body)
+    flagged = [(d["ball_no"], d["rebound_cm"]) for d in test["drops"] if d["outlier_z"] is not None]
+    assert flagged == [(5, 41.1)]
+    fit = test["summary"]["drops_fit"]
+    assert (fit["drops"], fit["outliers"], fit["tested"]) == (30, 1, True)
+    assert fit["mean_cm"] > 140  # the typo is left out of the fit
+    assert test["summary"]["medians"][4]["rebound_cm"] > 140  # the median shrugged it off
+
+    rows = list(csv.DictReader(io.StringIO(client.get("/api/bounce.csv").get_data(as_text=True))))
+    assert [r["rebound_cm"] for r in rows if r["outlier_z"]] == ["41.1"]
+    assert float(next(r["outlier_z"] for r in rows if r["outlier_z"])) < -10
+
+
+def test_outlier_check_for_the_test_form(seeded):
+    client, _, _ = seeded
+    values = [cm for _, cm in TYPO_TEST]
+    res = post(client, "/api/bounce/outliers", {"rebounds_cm": values}, 200)
+    assert [i for i, z in enumerate(res["outlier_z"]) if z is not None] == [13]
+    few = post(client, "/api/bounce/outliers", {"rebounds_cm": [140.0, 41.1]}, 200)
+    assert few["outlier_z"] == [None, None] and few["drops_fit"]["tested"] is False
+    assert post(client, "/api/bounce/outliers", {"rebounds_cm": []}, 200)["drops_fit"] is None
+    assert "must be a number" in error_of(
+        client.post("/api/bounce/outliers", json={"rebounds_cm": ["x"]})
+    )
+    assert "list" in error_of(client.post("/api/bounce/outliers", json={"rebounds_cm": 5}))

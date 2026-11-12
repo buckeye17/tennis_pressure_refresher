@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Canister Monitor</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23dde93b'/%3E%3Cpath d='M5 6c7 5 7 15 0 20M27 6c-7 5-7 15 0 20' fill='none' stroke='%23fff' stroke-width='2.5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='vendor/uplot/uPlot.min.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version) }}">
 </head>
 <body>
   <header class="top">
-    <h1>Canister Monitor</h1>
+    <a class="brand" href="#overview"><span class="ball" aria-hidden="true"></span><h1>Canister Monitor</h1></a>
     <nav class="tabs" id="tabs" aria-label="Sections">
       <a href="#overview" data-view="overview">Overview</a>
       <a href="#pressure" data-view="pressure">Pressure</a>
@@ -24,19 +24,20 @@
   <main>
     <p class="form-error banner" id="action-error" role="alert"></p>
 
-    <!-- Overview: what each canister reads, and what to do with the balls. -->
+    <!-- Overview: each canister with the balls inside it and what to do now, then the
+         batches that aren't in a canister. -->
     <div class="view" id="view-overview">
       <section aria-labelledby="canisters-title">
         <div class="section-head">
           <h2 id="canisters-title">Canisters</h2>
           <a class="more" href="#pressure">Pressure history</a>
         </div>
-        <div class="cards" id="cards"></div>
+        <div class="stations" id="cards"><p class="none">Loading…</p></div>
       </section>
 
-      <section aria-labelledby="todo-title">
+      <section aria-labelledby="loose-title">
         <div class="section-head">
-          <h2 id="todo-title">Balls</h2>
+          <h2 id="loose-title">Balls</h2>
           <button type="button" class="batch-new">New batch</button>
         </div>
         <div class="batches" id="overview-batches"></div>
@@ -72,23 +73,10 @@
 
       <div class="split">
         <section class="panel" aria-labelledby="notes-title">
-          <h2 id="notes-title">Notes</h2>
-          <p class="hint">Mark what you did to a canister. Notes show on the charts.</p>
-          <form id="event-form" class="event-form">
-            <select id="event-mac" aria-label="Canister"><option value="">All canisters</option></select>
-            <select id="event-kind" aria-label="Kind">
-              <option value="note">Note</option>
-              <option value="fill">Filled</option>
-              <option value="leak_test">Leak test (filled, no balls)</option>
-              <option value="vent">Vented</option>
-              <option value="balls_added">Balls added</option>
-              <option value="balls_removed">Balls removed</option>
-            </select>
-            <input id="event-note" type="text" maxlength="1000" placeholder="e.g. filled to 30 psi" aria-label="Note">
-            <input id="event-when" type="datetime-local" aria-label="When (leave empty for now)" title="When (leave empty for now)">
-            <button type="submit" class="primary">Add note</button>
-            <span class="form-error" id="event-error" role="alert"></span>
-          </form>
+          <div class="panel-head">
+            <h2 id="notes-title">Notes</h2>
+            <button type="button" data-open="event-dialog">Add note</button>
+          </div>
           <ul class="events" id="events"></ul>
         </section>
 
@@ -120,25 +108,25 @@
       </div>
     </div>
 
-    <!-- Balls: one batch at a time, with everything recorded about it. -->
+    <!-- Balls: pick a batch, then everything recorded about it. -->
     <div class="view" id="view-balls" hidden>
-      <div class="balls-layout">
-        <aside class="batch-nav" aria-labelledby="batch-nav-title">
-          <div class="section-head">
-            <h2 id="batch-nav-title">Batches</h2>
-            <button type="button" class="primary batch-new">New batch</button>
-          </div>
-          <nav class="batch-list" id="batch-list" aria-label="Ball batches"></nav>
-          <label class="toggle small" id="show-retired-wrap" hidden><input type="checkbox" id="show-retired"> Show retired batches</label>
-        </aside>
-        <div class="batch-detail" id="batch-detail"></div>
+      <div class="batch-bar">
+        <nav class="batch-list" id="batch-list" aria-label="Ball batches"></nav>
+        <div class="batch-bar-actions">
+          <label class="toggle small" id="show-retired-wrap" hidden><input type="checkbox" id="show-retired"> Show retired</label>
+          <button type="button" class="primary batch-new">New batch</button>
+        </div>
       </div>
+      <div class="batch-detail" id="batch-detail"></div>
     </div>
 
-    <!-- Setup: things you set once. -->
+    <!-- Setup: things you set once. Each list has one button that opens its form. -->
     <div class="view narrow" id="view-setup" hidden>
       <section class="panel" aria-labelledby="units-title">
-        <h2 id="units-title">Units</h2>
+        <div class="panel-head">
+          <h2 id="units-title">Units</h2>
+          <span class="hint">Remembered in this browser</span>
+        </div>
         <div class="unit-rows">
           <div class="unit-row">
             <span id="units-label">Pressure</span>
@@ -163,50 +151,34 @@
             </div>
           </div>
         </div>
-        <p class="hint">Remembered in this browser.</p>
       </section>
 
       <section class="panel" id="setups-box" aria-labelledby="setups-title">
-        <h2 id="setups-title">Test setups</h2>
-        <p class="hint">How you test: drop height and surface. Pick one and keep using it, so tests compare. A setup can't be changed once used, except its mid mark: the second mark on the wall that the video app calibrates with, near typical rebound heights.</p>
+        <div class="panel-head">
+          <h2 id="setups-title">Test setups</h2>
+          <button type="button" data-open="setup-dialog">Add setup</button>
+        </div>
+        <p class="hint">The drop height and surface you test with. Keep using one, so tests compare.</p>
         <ul class="mini" id="setups"></ul>
-        <form id="setup-form" class="inline-form">
-          <input id="setup-name" maxlength="60" placeholder="Name, e.g. Garage slab" aria-label="Setup name" required>
-          <span class="with-unit"><input id="setup-drop" inputmode="decimal" placeholder="Drop height" aria-label="Drop height" required><span class="len-unit"></span></span>
-          <span class="with-unit"><input id="setup-mid" inputmode="decimal" placeholder="Mid mark (video)" aria-label="Mid mark for video, optional"><span class="len-unit"></span></span>
-          <label class="toggle"><input type="checkbox" id="setup-itf"> ITF method: 100 in onto concrete</label>
-          <input id="setup-note" maxlength="1000" placeholder="Note (optional)" aria-label="Note">
-          <button type="submit" class="primary">Add setup</button>
-          <span class="form-error" id="setup-error" role="alert"></span>
-        </form>
       </section>
 
       <section class="panel" aria-labelledby="refs-title">
-        <h2 id="refs-title">New-ball reference values</h2>
-        <p class="hint">Like-new compares against new balls tested the same way: a batch's own new-ball tests, then other batches of the same brand and model. Enter a value here for balls you never tested new. To set one for a single batch, edit the batch.</p>
+        <div class="panel-head">
+          <h2 id="refs-title">New-ball rebound values</h2>
+          <button type="button" id="ref-add" data-open="ref-dialog">Add value</button>
+        </div>
+        <p class="hint">Only for balls you never tested new. Otherwise a batch compares with its own new-ball tests, then with other batches of the same brand and model.</p>
         <ul class="mini" id="references"></ul>
-        <form id="ref-form" class="inline-form">
-          <input id="ref-brand" list="brand-list" maxlength="60" placeholder="Brand" aria-label="Brand" required>
-          <input id="ref-model" list="model-list" maxlength="60" placeholder="Model" aria-label="Model" required>
-          <select id="ref-setup" aria-label="Setup" required></select>
-          <span class="with-unit"><input id="ref-rebound" inputmode="decimal" placeholder="New-ball rebound" aria-label="New-ball rebound" required><span class="len-unit"></span></span>
-          <button type="submit" class="primary">Save value</button>
-          <span class="form-error" id="ref-error" role="alert"></span>
-        </form>
       </section>
 
       <section class="panel" aria-labelledby="conv-title">
-        <h2 id="conv-title">ITF conversion</h2>
-        <p class="hint">Only needed when your setup isn't the ITF method. On one day, drop about 10 balls, from new to flat, both your way and from 100 in onto concrete. Enter one pair per ball.</p>
-        <ul class="mini" id="conversions"></ul>
+        <div class="panel-head">
+          <h2 id="conv-title">ITF conversion</h2>
+          <button type="button" id="conv-add" data-open="conv-dialog">Add pairs</button>
+        </div>
+        <p class="hint">Only needed when your setup isn't the ITF method: pairs of rebounds, your way and the ITF way, let the app convert between them.</p>
         <p class="hint" id="conv-none" hidden>All your setups are already the ITF method.</p>
-        <form id="conv-form" class="inline-form">
-          <select id="conv-setup" aria-label="Your setup" required></select>
-          <span class="with-unit"><input id="conv-rebound" inputmode="decimal" placeholder="Your rebound" aria-label="Rebound at your setup" required><span class="len-unit"></span></span>
-          <span class="with-unit"><input id="conv-itf" inputmode="decimal" placeholder="ITF rebound" aria-label="Rebound from 100 in onto concrete" required><span class="len-unit"></span></span>
-          <button type="submit" class="primary">Add pair</button>
-          <span class="form-error" id="conv-error" role="alert"></span>
-        </form>
+        <ul class="mini" id="conversions"></ul>
       </section>
 
       <section class="panel" aria-labelledby="data-title">
@@ -296,6 +268,89 @@
       <div class="dialog-actions">
         <button type="button" data-close>Cancel</button>
         <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="event-dialog" aria-labelledby="event-title">
+    <form id="event-form" class="dialog-form">
+      <h2 id="event-title">Add a note</h2>
+      <p class="hint">Mark what you did to a canister. Notes show as dashed lines on the charts.</p>
+      <div class="fields">
+        <label>Canister <select id="event-mac"><option value="">All canisters</option></select></label>
+        <label>What happened
+          <select id="event-kind">
+            <option value="note">Note</option>
+            <option value="fill">Filled</option>
+            <option value="leak_test">Leak test (filled, no balls)</option>
+            <option value="vent">Vented</option>
+            <option value="balls_added">Balls added</option>
+            <option value="balls_removed">Balls removed</option>
+          </select>
+        </label>
+        <label>When (blank = now) <input id="event-when" type="datetime-local"></label>
+        <label class="wide">Note <input id="event-note" type="text" maxlength="1000" placeholder="optional, e.g. filled to 30 psi"></label>
+      </div>
+      <p class="form-error" id="event-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary">Add note</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="setup-dialog" aria-labelledby="setup-dialog-title">
+    <form id="setup-form" class="dialog-form">
+      <h2 id="setup-dialog-title">New test setup</h2>
+      <p class="hint">Once a setup has tests, only its mid mark can change.</p>
+      <div class="fields">
+        <label class="wide">Name <input id="setup-name" maxlength="60" placeholder="e.g. Garage slab" required></label>
+        <label>Drop height <span class="with-unit"><input id="setup-drop" inputmode="decimal" required><span class="len-unit"></span></span></label>
+        <label>Mid mark, for video <span class="with-unit"><input id="setup-mid" inputmode="decimal" placeholder="optional"><span class="len-unit"></span></span></label>
+        <label class="wide check"><input type="checkbox" id="setup-itf"> ITF method: 100 in onto concrete</label>
+        <label class="wide">Note <input id="setup-note" maxlength="1000" placeholder="optional"></label>
+      </div>
+      <p class="hint">The mid mark is a second mark on the wall, near typical rebound heights. Ball Bounce Tracker calibrates with it.</p>
+      <p class="form-error" id="setup-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary">Add setup</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="ref-dialog" aria-labelledby="ref-dialog-title">
+    <form id="ref-form" class="dialog-form">
+      <h2 id="ref-dialog-title">New-ball rebound value</h2>
+      <p class="hint">What new balls of this kind rebound to at one of your setups. To set a value for a single batch, edit the batch instead.</p>
+      <div class="fields">
+        <label>Brand <input id="ref-brand" list="brand-list" maxlength="60" required></label>
+        <label>Model <input id="ref-model" list="model-list" maxlength="60" required></label>
+        <label>Setup <select id="ref-setup" required></select></label>
+        <label>New-ball rebound <span class="with-unit"><input id="ref-rebound" inputmode="decimal" required><span class="len-unit"></span></span></label>
+      </div>
+      <p class="form-error" id="ref-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary">Save value</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="conv-dialog" aria-labelledby="conv-dialog-title">
+    <form id="conv-form" class="dialog-form">
+      <h2 id="conv-dialog-title">ITF conversion pairs</h2>
+      <p class="hint">On one day, drop about 10 balls, from new to flat, both your way and from 100 in onto concrete. Add one pair per ball.</p>
+      <div class="fields">
+        <label class="wide">Your setup <select id="conv-setup" required></select></label>
+        <label>Rebound at your setup <span class="with-unit"><input id="conv-rebound" inputmode="decimal" required><span class="len-unit"></span></span></label>
+        <label>Rebound the ITF way <span class="with-unit"><input id="conv-itf" inputmode="decimal" required><span class="len-unit"></span></span></label>
+      </div>
+      <p class="form-done" id="conv-done" aria-live="polite"></p>
+      <p class="form-error" id="conv-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Done</button>
+        <button type="submit" class="primary">Add pair</button>
       </div>
     </form>
   </dialog>

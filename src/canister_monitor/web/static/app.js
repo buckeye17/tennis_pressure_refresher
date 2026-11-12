@@ -41,6 +41,8 @@
       selected: null, // the batch the Balls tab shows
       showRetired: false,
       pictures: new Set(), // video tests whose drop pictures are shown
+      records: "tests", // what a batch's page lists: tests, sessions or plays
+      whyOpen: new Set(), // batches whose advice has its explanation open
     },
     // Charge sessions, play, estimated bounce and advice per batch (PLAN.md 6.4).
     charge: { settings: null, batches: [] },
@@ -168,17 +170,17 @@
     const age = trend.session_start == null ? "" : fmtDays(serverNow() - trend.session_start);
     switch (trend.status) {
       case "insufficient_data":
-        return { text: `Trend: needs ~${Math.round(trend.window_s / 7200)} h of data`, mod: "" };
+        return { text: `The trend needs about ${Math.round(trend.window_s / 7200)} h of readings`, mod: "" };
       case "falling":
-        return { text: `▼ ${rate} · still dropping`, mod: "" };
+        return { text: `▼ Still dropping, ${rate}`, mod: "" };
       case "rising":
-        return { text: `▲ ${rate} · rising`, mod: "" };
+        return { text: `▲ Rising, ${rate}`, mod: "" };
       case "levelling_off":
-        return { text: `Levelling off · flat ${fmtDays(since)}`, mod: "flat" };
+        return { text: `Levelling off, flat for ${fmtDays(since)}`, mod: "flat" };
       case "levelled_off": // levelled_since is only looked back ~plateau_hours, so no duration
         return { text: "✓ Levelled off", mod: "flat" };
       case "leak_suspected":
-        return { text: `▼ ${rate} · still dropping ${age} ${after} — check for a leak`, mod: "leak" };
+        return { text: `▼ Still dropping ${rate}, ${age} ${after}. Check for a leak.`, mod: "leak" };
       default:
         return null;
     }
@@ -193,54 +195,175 @@
     return fills.length ? Math.max(...fills) : null;
   }
 
-  // --- cards ---------------------------------------------------------------------------
+  // --- overview: each canister with the balls inside it ---------------------------------
+
+  const loaded = { canisters: false, bounce: false };
+  let introDone = false; // the ball drops onto its scale the first time only
+
+  /** Labelled figures: [label, value] pairs, skipping the missing ones. */
+  function facts(pairs) {
+    return el("dl", { class: "facts" },
+      ...pairs.filter(Boolean).map(([k, v]) => el("div", {}, el("dt", {}, k), el("dd", {}, v))));
+  }
+
+  /** Re-render part of the page without losing which button the keyboard is on. */
+  function keepFocus(root, render) {
+    const key = root.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+    render();
+    if (key) root.querySelector(`[data-focus="${key}"]`)?.focus();
+  }
+
+  function ageText(c) {
+    const r = c.reading;
+    if (!r) return c.last_seen ? "Heard, no reading yet" : "Never heard";
+    return `${c.stale ? "Stale, updated" : "Updated"} ${fmtAgo(serverNow() - r.ts)}`;
+  }
+
+  /** Keep "updated X ago" current between polls, without redrawing the cards. */
+  function updateAges() {
+    for (const node of document.querySelectorAll(".age[data-mac]")) {
+      const c = state.canisters.find((x) => x.mac === node.dataset.mac);
+      if (c) node.textContent = ageText(c);
+    }
+  }
+
+  /** The canister's pressure on a bar, against the two pressures the balls are kept at. */
+  function pressureScale(shownKpa) {
+    const st = state.charge.settings;
+    if (!st || shownKpa == null) return null;
+    const max = Math.max(st.charge_kpa * 1.25, shownKpa * 1.08);
+    const pos = (kpa) => `${Math.max(0, Math.min(100, (kpa / max) * 100)).toFixed(1)}%`;
+    const mark = (kpa, word) => el("span", { style: `left:${pos(kpa)}` },
+      el("b", {}, fmtPressure(toPressure(kpa))), ` ${word}`);
+    return el("div", {
+      class: "pscale", role: "img",
+      "aria-label": `Maintenance pressure is ${fmtP(st.maintenance_kpa)}, charge pressure ${fmtP(st.charge_kpa)}.`,
+    },
+      el("div", { class: "pscale-track" },
+        el("span", { class: "pscale-fill", style: `width:${pos(shownKpa)}` }),
+        el("span", { class: "pscale-tick", style: `left:${pos(st.maintenance_kpa)}` }),
+        el("span", { class: "pscale-tick", style: `left:${pos(st.charge_kpa)}` })),
+      el("div", { class: "pscale-labels", "aria-hidden": "true" },
+        mark(st.maintenance_kpa, "maintenance"), mark(st.charge_kpa, "charge")));
+  }
+
+  /** The batch's estimated bounce as a ball on a scale of its new-ball bounce. */
+  function bounceScale(c) {
+    if (c?.ratio == null) return null;
+    const tol = state.charge.settings.like_new_tolerance_pct;
+    const r = c.ratio * 100;
+    const lo = Math.min(100 - 3 * tol, r - tol / 2);
+    const hi = Math.max(100 + 2 * tol, r + tol / 2);
+    const at = (v) => ((Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo)) * 100;
+    const pos = (v) => `${at(v).toFixed(1)}%`;
+    const [rLo, rHi] = (c.ratio_range || []).map((x) => (x == null ? null : x * 100));
+    const label = (v, text) => el("span", { style: `left:${pos(v)}` }, text);
+    return el("div", {
+      class: `bscale${introDone ? "" : " intro"}`, role: "img",
+      "aria-label": `Estimated ${fmtPct(c.ratio)} of new. Like new is ${100 - tol}% to ${100 + tol}%.`,
+    },
+      el("div", { class: "bscale-value", "aria-hidden": "true" }, label(r, fmtPct(c.ratio))),
+      el("div", { class: "bscale-track" }, el("div", { class: "bscale-in" },
+        el("span", { class: "bscale-band", style: `left:${pos(100 - tol)};width:${(at(100 + tol) - at(100 - tol)).toFixed(1)}%` }),
+        el("span", { class: "bscale-new", style: `left:${pos(100)}` }),
+        rLo != null && rHi != null
+          ? el("span", { class: "bscale-range", style: `left:${pos(rLo)};width:${(at(rHi) - at(rLo)).toFixed(1)}%` })
+          : null,
+        el("span", { class: "ball", style: `left:${pos(r)}` }))),
+      el("div", { class: "bscale-labels", "aria-hidden": "true" },
+        label(100 - tol, `${100 - tol}%`), label(100, "New"), label(100 + tol, `${100 + tol}%`)));
+  }
+
+  /** The latest bounce test, as labelled figures. */
+  function latestFacts(b, c) {
+    const t = b.tests[b.tests.length - 1];
+    if (!t) return el("p", { class: "hint" }, "No tests yet. Start with the new balls, straight from the can.");
+    const s = t.summary;
+    const k = s.drops_fit?.outliers || 0;
+    const ofNew = ratioOfTest(c, t.id);
+    return facts([
+      ["Latest test", `${fmtDate(t.ts)}, ${(CONTEXT_SHORT[t.context] || t.context).toLowerCase()}`],
+      ["Average", `${fmtLen(s.mean_cm)}${s.sd_cm != null ? ` ±${toLen(s.sd_cm).toFixed(1)}` : ""}`],
+      ofNew != null ? ["Of new", fmtPct(ofNew)] : null,
+      ["Balls", k ? `${s.balls}, ${misfits(k)}` : String(s.balls)],
+    ]);
+  }
+
+  /** What to do with a batch now, and how it bounces: the advice beside the scale. */
+  function batchNow(b, c, advise = true) {
+    return el("div", { class: "batch-now" },
+      c && advise ? adviceBox(b, c) : null,
+      el("div", { class: "batch-measure" }, bounceScale(c), latestFacts(b, c)));
+  }
+
+  /** A batch on the Overview: its name, what to do with it now, and the buttons to do it. */
+  function batchBlock(b, c, where) {
+    return el("div", { class: "batch-block" },
+      el("div", { class: "batch-head" },
+        el("h4", {}, el("a", { href: `#balls/${b.id}` }, batchName(b))),
+        where ? el("span", { class: "where" }, where) : null),
+      batchNow(b, c),
+      el("div", { class: "actions" }, batchActions(b, c),
+        el("a", { class: "more", href: `#balls/${b.id}` }, "History and tests")));
+  }
+
+  /** A canister: its reading on the left, and the balls inside it on the right. */
+  function stationCard(c) {
+    const r = c.reading;
+    const unit = state.units;
+    const comp = r && r.compensated_gauge_kpa;
+    const shown = r && (state.compensated && comp != null ? comp : r.gauge_kpa);
+    const other = r && (state.compensated ? r.gauge_kpa : comp);
+    const trend = trendLine(c.trend);
+    const inside = batchesIn(c.mac);
+    const filled = !inside.length && c.trend && c.trend.session_source === "fill"
+      ? `Filled ${fmtDays(serverNow() - c.trend.session_start)} ago. ` : "";
+    return el("article", { class: `station${c.stale ? " stale" : ""}`, style: `--c:${colorFor(c.mac)}` },
+      el("div", { class: "station-in" },
+        el("div", { class: "station-reading" },
+          el("div", { class: "station-head" },
+            el("h3", {}, el("span", { class: "swatch" }), c.canister || "Unassigned sensor"),
+            el("span", { class: "age", "data-mac": c.mac }, ageText(c))),
+          el("div", { class: "big" }, r ? fmtPressure(toPressure(shown)) : "—", el("small", {}, unit)),
+          r ? pressureScale(shown) : null,
+          r ? facts([
+            other != null ? [state.compensated ? "Raw" : "Compensated", `${fmtPressure(toPressure(other))} ${unit}`]
+              : state.compensated ? ["Compensated", "No temperature, showing raw"] : null,
+            ["Temperature", fmtTemp(r.temp_c)],
+            r.battery_pct != null || r.battery_v != null ? ["Battery", fmtBattery(r)] : null,
+            c.rssi != null ? ["Signal", `${c.rssi} dBm`] : null,
+          ]) : null,
+          trend ? el("div", { class: `trend ${trend.mod}` }, trend.text) : null,
+          c.assigned ? null : el("p", { class: "hint" },
+            "To name this sensor, add its MAC ", el("code", {}, c.mac), " to config.toml under [[sensors]].")),
+        el("div", { class: "station-balls" },
+          ...inside.map(({ batch, charge, session }) =>
+            batchBlock(batch, charge, `In for ${fmtDays(serverNow() - session.start_ts)}`)),
+          inside.length ? null : el("p", { class: "none" }, filled,
+            "No balls logged in this canister. Start a charge session from a batch when balls go in."))));
+  }
 
   function renderCards() {
-    const root = $("#cards");
-    root.replaceChildren();
-    if (state.canisters.length === 0) {
-      root.append(el("p", { class: "no-sensors" },
-        "No sensors yet. Start the collector, or list sensors in config.toml."));
-      return;
-    }
-    const unit = state.units;
-    for (const c of state.canisters) {
-      const r = c.reading;
-      const comp = r && r.compensated_gauge_kpa;
-      const shown = r && (state.compensated && comp != null ? comp : r.gauge_kpa);
-      const other = r && (state.compensated ? r.gauge_kpa : comp);
-      const age = r ? serverNow() - r.ts : null;
-      const battery = r && fmtBattery(r);
-      const trend = trendLine(c.trend);
-      const inside = batchesIn(c.mac);
-      const filled = !inside.length && c.trend && c.trend.session_source === "fill"
-        ? `Filled ${fmtDays(serverNow() - c.trend.session_start)} ago` : null;
-
-      root.append(el("article", { class: `card${c.stale ? " stale" : ""}`, style: `--c:${colorFor(c.mac)}` },
-        el("h3", {}, c.canister || "Unassigned sensor"),
-        el("div", { class: "big" }, r ? fmtPressure(toPressure(shown)) : "—", el("small", {}, unit)),
-        r && other != null
-          ? el("div", { class: "sub" }, `${state.compensated ? "Raw" : "Compensated"} ${fmtPressure(toPressure(other))} ${unit}`)
-          : el("div", { class: "sub" }, r && state.compensated ? "No temperature: showing raw" : " "),
-        el("dl", { class: "meta" },
-          el("div", {}, el("dt", {}, "Temp"), el("dd", {}, r ? fmtTemp(r.temp_c) : "—")),
-          el("div", {}, el("dt", {}, "Battery"), el("dd", {}, battery || "—")),
-          el("div", {}, el("dt", {}, "Signal"), el("dd", {}, c.rssi != null ? `${c.rssi} dBm` : "—"))),
-        trend ? el("div", { class: `trend ${trend.mod}` }, trend.text) : null,
-        filled ? el("div", { class: "session" }, filled) : null,
-        ...inside.map(({ batch, charge, session }) => {
-          const short = adviceShort(charge);
-          return el("div", { class: "session" },
-            el("a", { href: `#balls/${batch.id}` }, batchName(batch)),
-            ` in for ${fmtDays(serverNow() - session.start_ts)}`,
-            short ? el("span", { class: `advice-short ${short.mod}` }, ` · ${short.text}`) : null);
-        }),
-        el("div", { class: "age" },
-          r ? `${c.stale ? "Stale · " : ""}updated ${fmtAgo(age)}` : c.last_seen ? "Heard, no reading yet" : "Never heard"),
-        c.assigned ? null : el("p", { class: "hint" },
-          "MAC ", el("code", {}, c.mac), " — add it to config.toml under [[sensors]] to name it."),
-      ));
-    }
+    if (!loaded.canisters || !loaded.bounce) return; // one draw, once both are known
+    keepFocus($("#view-overview"), () => {
+      $("#cards").replaceChildren(...state.canisters.map(stationCard));
+      if (state.canisters.length === 0) {
+        $("#cards").append(el("p", { class: "none" },
+          "No sensors yet. Start the collector, or list sensors in config.toml."));
+      }
+      // The batches that aren't shown inside a canister above.
+      const inCards = new Set(state.canisters.flatMap((c) => batchesIn(c.mac).map((x) => x.batch.id)));
+      const active = state.bounce.batches.filter((b) => b.retired_ts == null);
+      const rest = active.filter((b) => !inCards.has(b.id));
+      $("#loose-title").textContent = !inCards.size || !rest.length ? "Balls"
+        : rest.some((b) => b.location?.in_canister) ? "Other balls" : "Out of a canister";
+      const list = $("#overview-batches");
+      list.replaceChildren(...rest.map((b) =>
+        el("article", { class: "batch" }, batchBlock(b, chargeFor(b.id), locationText(b)))));
+      if (!active.length) list.append(noBatches());
+      else if (!rest.length) list.append(el("p", { class: "none" }, "Every batch is in a canister."));
+    });
+    if (!introDone) setTimeout(() => { introDone = true; }, 1500);
   }
 
   function renderCanisterOptions(select) {
@@ -278,7 +401,7 @@
     const marks = [...state.events];
     for (const c of state.charge.batches) {
       for (const s of c.sessions) {
-        const note = batchLabel(c.batch_id) + (s.note ? ` · ${s.note}` : "");
+        const note = batchLabel(c.batch_id) + (s.note ? `: ${s.note}` : "");
         marks.push({ ts: s.start_ts, mac: s.mac, kind: "session_start", note });
         if (s.end_ts != null) marks.push({ ts: s.end_ts, mac: s.mac, kind: "session_end", note });
       }
@@ -320,8 +443,8 @@
           const hit = u.cursor.left >= 0 && nearest(u, u.cursor.left);
           if (!hit) { tip.hidden = true; return; }
           const { ev } = hit;
-          tip.textContent = `${fmtDateTime(ev.ts)} · ${KIND_LABELS[ev.kind] || ev.kind}`
-            + `${ev.mac ? ` · ${nameFor(ev.mac)}` : ""}${ev.note ? ` — ${ev.note}` : ""}`;
+          tip.textContent = `${fmtDateTime(ev.ts)}, ${KIND_LABELS[ev.kind] || ev.kind}`
+            + `${ev.mac ? `, ${nameFor(ev.mac)}` : ""}${ev.note ? `: ${ev.note}` : ""}`;
           tip.hidden = false;
           // Center on the marker, but keep the whole tip inside the chart.
           const maxLeft = tipHost.clientWidth - tip.offsetWidth;
@@ -485,13 +608,11 @@
     }
     for (const ev of events) {
       list.append(el("li", {},
-        el("span", { class: "when" }, fmtDateTime(ev.ts)),
+        el("span", { class: "when" }, `${fmtDateTime(ev.ts)}, ${ev.mac ? nameFor(ev.mac) : "all canisters"}`,
+          ev.batch_id ? `, ${batchLabel(ev.batch_id)}` : ""),
         el("span", { class: "what" },
           el("span", { class: "kind" }, KIND_LABELS[ev.kind] || ev.kind),
-          ev.note || "",
-          " ",
-          el("span", { class: "who" }, ev.mac ? `· ${nameFor(ev.mac)}` : "· all canisters",
-            ev.batch_id ? ` · ${batchLabel(ev.batch_id)}` : "")),
+          ev.note ? `: ${ev.note}` : ""),
         el("button", {
           class: "del", type: "button", title: "Delete note", "aria-label": "Delete note",
           onclick: () => deleteEvent(ev),
@@ -501,11 +622,12 @@
 
   async function deleteEvent(ev) {
     if (!confirm(`Delete this note?\n\n${fmtDateTime(ev.ts)} ${KIND_LABELS[ev.kind] || ev.kind} ${ev.note || ""}`)) return;
+    $("#action-error").textContent = "";
     try {
       await api(`/api/events/${ev.id}`, { method: "DELETE" });
       await refreshReadings();
     } catch (e) {
-      $("#event-error").textContent = `Could not delete: ${e.message}`;
+      $("#action-error").textContent = `Could not delete the note: ${e.message}`;
     }
   }
 
@@ -524,8 +646,7 @@
       await api("/api/events", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
-      $("#event-note").value = "";
-      $("#event-when").value = "";
+      $("#event-dialog").close();
       await refreshReadings();
     } catch (ex) {
       err.textContent = `Could not add note: ${ex.message}`;
@@ -599,14 +720,9 @@
     return batchById(state.bounce.selected) || all.find((b) => b.retired_ts == null) || all[0] || null;
   }
 
-  /** Everywhere batches show: the Overview's cards, and the Balls tab's list and detail. */
+  /** The Balls tab: the batches to pick from, and the page of the one that's picked. */
   function renderBatches() {
     const all = state.bounce.batches;
-    const active = all.filter((b) => b.retired_ts == null);
-    const overview = $("#overview-batches");
-    overview.replaceChildren(...active.map(overviewCard));
-    if (!active.length) overview.append(noBatches());
-
     const current = selectedBatch();
     const listed = all.filter((b) => state.bounce.showRetired || b.retired_ts == null || b === current);
     $("#show-retired-wrap").hidden = !all.some((b) => b.retired_ts != null);
@@ -614,39 +730,29 @@
 
     for (const chart of batchCharts.values()) chart.destroy();
     batchCharts.clear();
-    $("#batch-detail").replaceChildren(...(current ? batchDetail(current) : [noBatches()]));
+    const detail = $("#batch-detail");
+    keepFocus(detail, () => detail.replaceChildren(...(current ? batchDetail(current) : [noBatches()])));
     if (state.view === "balls") mountBatchCharts();
   }
 
   /** What to do first, in place of the batches. */
   function noBatches() {
-    const all = state.bounce.batches;
-    if (all.length) {
-      return el("p", { class: "none" }, "All batches are retired. ",
+    if (state.bounce.batches.length) {
+      return el("p", { class: "none start" }, "All batches are retired. ",
         el("a", { href: "#balls" }, "See them on the Balls tab"), ".");
     }
     if (!state.bounce.setups.length) {
-      return el("p", { class: "none" }, "Start on the ", el("a", { href: "#setup" }, "Setup tab"),
+      return el("p", { class: "none start" }, "Start on the ", el("a", { href: "#setup" }, "Setup tab"),
         ": add the drop height and surface you'll always test with. Then add a batch when you open new balls.");
     }
-    return el("p", { class: "none" },
+    return el("p", { class: "none start" },
       "No ball batches yet. Add one when you open new balls, and test them before they go in a canister.");
   }
 
   function locationText(b) {
     if (!b.location) return null;
-    if (!b.location.in_canister) return "Out of canister";
+    if (!b.location.in_canister) return "Out of a canister";
     return `In ${b.location.mac ? nameFor(b.location.mac) : "a canister"}`;
-  }
-
-  function testLine(t, ofNew = null) {
-    const s = t.summary;
-    const spread = s.sd_cm != null ? ` ±${toLen(s.sd_cm).toFixed(1)}` : "";
-    const k = s.drops_fit?.outliers || 0;
-    return `${fmtDate(t.ts)} · ${CONTEXT_SHORT[t.context] || t.context} · average ${fmtLen(s.mean_cm)}${spread}`
-      + (ofNew != null ? ` · ${fmtPct(ofNew)} of new` : "")
-      + ` · ${s.balls} ball${s.balls === 1 ? "" : "s"}`
-      + (k ? ` · ${misfits(k)}` : "");
   }
 
   const misfits = (k) => (k === 1 ? "1 drop doesn't fit the others" : `${k} drops don't fit the others`);
@@ -667,85 +773,80 @@
     return lines;
   }
 
-  const latestLine = (b, c) => {
-    const latest = b.tests[b.tests.length - 1];
-    return latest
-      ? `Latest test: ${testLine(latest, ratioOfTest(c, latest.id))}`
-      : "No tests yet. Start with the new balls, straight from the can.";
-  };
-
   /** The things you do to a batch day to day: test it, charge it, play with it. */
   function batchActions(b, c) {
     const noSetup = state.bounce.setups.length === 0;
     const running = c?.sessions.find((s) => s.end_ts == null);
     return [
       el("button", {
-        type: "button", class: "primary", disabled: noSetup,
+        type: "button", class: "primary", disabled: noSetup, "data-focus": `test-${b.id}`,
         title: noSetup ? "Add a test setup first, on the Setup tab" : null, onclick: () => openTest(b),
       }, "Bounce test"),
-      c ? el("button", { type: "button", onclick: () => openSession(b, running || null, Boolean(running)) },
-        running ? "End charge session" : "Start charge session") : null,
-      c ? el("button", { type: "button", onclick: () => openPlay(b) }, "Log play") : null,
+      c ? el("button", {
+        type: "button", "data-focus": `session-${b.id}`, onclick: () => openSession(b, running || null, Boolean(running)),
+      }, running ? "End charge session" : "Start charge session") : null,
+      c ? el("button", { type: "button", "data-focus": `play-${b.id}`, onclick: () => openPlay(b) }, "Log play") : null,
     ];
   }
 
-  /** A batch on the Overview: what to do with it now, and the buttons to do it. */
-  function overviewCard(b) {
-    const c = chargeFor(b.id);
-    const where = locationText(b);
-    return el("article", { class: "batch" },
-      el("div", { class: "batch-head" },
-        el("h3", {}, el("a", { href: `#balls/${b.id}` }, batchName(b))),
-        where ? el("span", { class: "tag" }, where) : null),
-      c ? adviceBox(b, c) : null,
-      el("div", { class: "latest" }, latestLine(b, c)),
-      el("div", { class: "actions" }, batchActions(b, c),
-        el("a", { class: "more", href: `#balls/${b.id}` }, "History and tests")));
-  }
-
-  /** A batch in the Balls tab's list. */
+  /** A batch to pick, in the row across the top of the Balls tab. */
   function batchLink(b, current) {
     const c = chargeFor(b.id);
     const retired = b.retired_ts != null;
-    const where = retired ? "Retired" : locationText(b);
+    const now = retired ? ["Retired"]
+      : [locationText(b), c?.ratio != null ? `${fmtPct(c.ratio)} of new` : null].filter(Boolean);
     return el("a", {
       href: `#balls/${b.id}`, class: `batch-link${retired ? " retired" : ""}`, "aria-current": current ? "true" : null,
     },
       el("strong", {}, batchName(b)),
-      el("span", { class: "sub" }, `Opened ${fmtDate(b.opened_ts)}${where ? ` · ${where}` : ""}`),
-      c?.ratio != null && !retired ? el("span", { class: "sub" }, `Estimated ${fmtPct(c.ratio)} of new`) : null);
+      el("span", { class: "sub" }, `Opened ${fmtDate(b.opened_ts)}`),
+      now.length ? el("span", { class: "sub" }, now.join(", ")) : null);
   }
 
-  /** The Balls tab's page for one batch: its summary, then everything recorded about it. */
+  /** The Balls tab's page for one batch: what to do now, its bounce over time, its records. */
   function batchDetail(b) {
     const c = chargeFor(b.id);
     const retired = b.retired_ts != null;
     const sample = b.sample_size === b.n_balls ? `testing all ${b.n_balls}` : `testing balls 1–${b.sample_size}`;
     const where = locationText(b);
-    const summary = el("section", { class: "panel batch-summary" },
+    const summary = el("section", { class: "panel batch-summary batch-block" },
       el("div", { class: "panel-head" },
         el("div", { class: "batch-head" },
           el("h2", {}, batchName(b)),
-          where ? el("span", { class: "tag" }, where) : null,
+          where && !retired ? el("span", { class: "tag" }, where) : null,
           retired ? el("span", { class: "tag" }, `Retired ${fmtDate(b.retired_ts)}`) : null),
         el("div", { class: "head-actions" },
           el("button", { type: "button", class: "quiet", onclick: () => openBatch(b) }, "Edit"),
           el("button", { type: "button", class: "quiet", onclick: () => retireBatch(b) }, retired ? "Un-retire" : "Retire"),
           el("button", { type: "button", class: "quiet danger", onclick: () => deleteBatch(b) }, "Delete"))),
-      el("div", { class: "sub" }, `Opened ${fmtDate(b.opened_ts)} · ${b.n_balls} balls · ${sample}`
-        + (b.reference_override_cm != null ? ` · new-ball value ${fmtLen(b.reference_override_cm)} (entered)` : "")),
-      b.note ? el("div", { class: "sub" }, b.note) : null,
-      c && !retired ? adviceBox(b, c) : null,
-      el("div", { class: "latest" }, latestLine(b, c)),
+      el("div", { class: "batch-facts" },
+        el("p", { class: "sub" }, `Opened ${fmtDate(b.opened_ts)}. ${b.n_balls} balls, ${sample}.`
+          + (b.reference_override_cm != null ? ` New-ball rebound entered as ${fmtLen(b.reference_override_cm)}.` : "")),
+        b.note ? el("p", { class: "sub" }, b.note) : null),
+      batchNow(b, c, !retired),
       el("div", { class: "actions" }, batchActions(b, c)));
-    return [summary, c ? bounceChartPanel(b, c) : null, testsPanel(b),
-      c ? sessionsPanel(b, c) : null, c ? playsPanel(b, c) : null].filter(Boolean);
+    return [summary, c ? bounceChartPanel(b, c) : null, recordsPanel(b, c)].filter(Boolean);
   }
 
-  function testsPanel(b) {
-    return el("section", { class: "panel" },
-      el("h3", {}, `Bounce tests${b.tests.length ? ` (${b.tests.length})` : ""}`),
-      b.tests.length ? testsTable(b) : el("p", { class: "hint" }, "None yet."));
+  /** Everything recorded about a batch, one kind at a time: tests, charge sessions, play. */
+  function recordsPanel(b, c) {
+    const kinds = [["tests", "Bounce tests", b.tests.length]];
+    if (c) kinds.push(["sessions", "Charge sessions", c.sessions.length], ["plays", "Play", c.plays.length]);
+    const current = kinds.some(([k]) => k === state.bounce.records) ? state.bounce.records : "tests";
+    const body = current === "sessions" ? sessionsBody(b, c) : current === "plays" ? playsBody(c) : testsBody(b);
+    return el("section", { class: "panel records" },
+      el("div", { class: "panel-head" },
+        el("div", { class: "seg", role: "group", "aria-label": "What to list" },
+          ...kinds.map(([k, label, n]) => el("button", {
+            type: "button", "aria-pressed": String(k === current), "data-focus": `records-${k}`,
+            onclick: () => { state.bounce.records = k; renderBatches(); },
+          }, label, n ? el("span", { class: "count" }, n) : null)))),
+      ...body);
+  }
+
+  function testsBody(b) {
+    return [b.tests.length ? testsTable(b)
+      : el("p", { class: "hint" }, "No tests yet. Start with the new balls, straight from the can.")];
   }
 
   function testsTable(b) {
@@ -809,14 +910,14 @@
             el("img", { src: closeup, alt: `Ball ${d.ball_no}, drop ${n}: the ball at its apex`, loading: "lazy",
               title: "The ball at its apex, full resolution. The green line is where the measurement put the bottom of the ball." }))
           : null,
-        el("figcaption", {}, `Ball ${d.ball_no}.${n} · ${height == null ? "—" : fmtLen(height)}`,
+        el("figcaption", {}, `Ball ${d.ball_no}.${n}: ${height == null ? "—" : fmtLen(height)}`,
           d.edited_cm != null ? el("span", { class: "tag" }, "edited") : null,
           d.kept ? null : el("span", { class: "tag" }, "rejected"),
           d.warnings.length ? el("span", { class: "flag", "aria-label": d.warnings.join("; ") }, " ⚠") : null));
     });
     const cal = t.video.calibration ? `calibrated (${t.video.calibration})` : "not calibrated";
     return el("tr", { class: "pictures-row" }, el("td", { colspan: columns },
-      el("div", { class: "sub" }, `${t.video.filename} · ${cal}`),
+      el("div", { class: "sub" }, `${t.video.filename}, ${cal}`),
       el("div", { class: "drop-pics" }, ...figures)));
   }
 
@@ -841,21 +942,26 @@
   function renderSetups() {
     const list = $("#setups");
     list.replaceChildren(...state.bounce.setups.map((s) => el("li", {},
-      el("span", {}, el("strong", {}, s.name), ` · drops from ${fmtLen(s.drop_cm)}`,
-        s.mid_mark_cm != null ? ` · mid mark ${fmtLen(s.mid_mark_cm)}` : "",
-        s.is_itf ? " · ITF method" : "", s.note ? ` · ${s.note}` : ""),
+      el("span", {}, el("strong", {}, s.name),
+        el("span", { class: "sub" }, [
+          `Drops from ${fmtLen(s.drop_cm)}`,
+          s.mid_mark_cm != null ? `mid mark ${fmtLen(s.mid_mark_cm)}` : null,
+          s.is_itf ? "ITF method" : null,
+        ].filter(Boolean).join(", "), s.note ? `. ${s.note}` : "")),
       el("span", {},
         el("button", { type: "button", class: "link", onclick: () => editMidMark(s) },
-          s.mid_mark_cm != null ? "Mid mark" : "Add mid mark"),
+          s.mid_mark_cm != null ? "Change mid mark" : "Add mid mark"),
         s.used
-          ? el("span", { class: "muted small" }, "in use")
+          ? el("span", { class: "muted small", title: "A setup with tests can't be deleted" }, "in use")
           : delButton("Delete setup", () => removeItem(`/api/bounce/setups/${s.id}`, `Delete the setup "${s.name}"?`))))));
-    if (!state.bounce.setups.length) list.append(el("li", { class: "none" }, "No setups yet."));
+    if (!state.bounce.setups.length) {
+      list.append(el("li", { class: "none" }, "No setups yet. Add the one you'll test with."));
+    }
     setupOptions($("#ref-setup"));
     const nonItf = setupOptions($("#conv-setup"), (s) => !s.is_itf);
-    $("#conv-form").hidden = nonItf === 0;
+    $("#conv-add").hidden = nonItf === 0;
     $("#conv-none").hidden = nonItf > 0 || state.bounce.setups.length === 0;
-    $("#ref-form").hidden = state.bounce.setups.length === 0;
+    $("#ref-add").hidden = state.bounce.setups.length === 0;
   }
 
   function renderReferences() {
@@ -863,7 +969,7 @@
     const list = $("#references");
     list.replaceChildren(...refs.map((r) => el("li", {},
       el("span", {}, el("strong", {}, `${r.brand} ${r.model}`),
-        ` · ${setupById(r.setup_id)?.name ?? "?"} · ${fmtLen(r.rebound_cm)}`),
+        el("span", { class: "sub" }, `${fmtLen(r.rebound_cm)} at ${setupById(r.setup_id)?.name ?? "a deleted setup"}`)),
       delButton("Delete value", () => removeItem(`/api/bounce/references/${r.id}`, `Delete the value for ${r.brand} ${r.model}?`)))));
     if (!refs.length) list.append(el("li", { class: "none" }, "None entered."));
     const brands = new Set(), models = new Set();
@@ -876,9 +982,10 @@
     const convs = state.bounce.conversions;
     const list = $("#conversions");
     list.replaceChildren(...convs.map((c) => el("li", {},
-      el("span", {}, `${fmtDate(c.ts)} · ${setupById(c.setup_id)?.name ?? "?"}: `,
-        el("strong", {}, fmtLen(c.rebound_cm)), " → ITF ", el("strong", {}, fmtLen(c.itf_rebound_cm)),
-        c.note ? ` · ${c.note}` : ""),
+      el("span", {}, el("strong", {}, fmtLen(c.rebound_cm)), " your way, ",
+        el("strong", {}, fmtLen(c.itf_rebound_cm)), " the ITF way",
+        el("span", { class: "sub" }, `${setupById(c.setup_id)?.name ?? "A deleted setup"}, ${fmtDate(c.ts)}`,
+          c.note ? `. ${c.note}` : "")),
       delButton("Delete pair", () => removeItem(`/api/bounce/conversions/${c.id}`, "Delete this pair?")))));
     if (!convs.length) list.append(el("li", { class: "none" }, "No pairs yet."));
   }
@@ -894,16 +1001,27 @@
     }
   }
 
-  async function submitForm(e, errorSel, action) {
+  /** Run a dialog form's save. The dialog closes when it worked, unless `stayOpen`. */
+  async function submitForm(e, errorSel, action, stayOpen = false) {
     e.preventDefault();
     const err = $(errorSel);
     err.textContent = "";
     try {
       await action();
+      if (!stayOpen) e.target.closest("dialog").close();
       await refreshBounce();
     } catch (ex) {
       err.textContent = ex.message;
     }
+  }
+
+  /** Open one of the small forms (a note, a setup, a value, pairs), empty. */
+  function openForm(id) {
+    const dialog = $(`#${id}`);
+    dialog.querySelector("form").reset();
+    for (const p of dialog.querySelectorAll(".form-error, .form-done")) p.textContent = "";
+    $("#setup-drop").readOnly = false;
+    dialog.showModal();
   }
 
   /** A required length input, in cm. Throws a readable error, in the user's units. */
@@ -948,8 +1066,6 @@
         note: $("#setup-note").value.trim() || null,
         mid_mark_cm: mid,
       });
-      e.target.reset();
-      $("#setup-drop").readOnly = false;
     });
   }
 
@@ -968,21 +1084,25 @@
         setup_id: Number($("#ref-setup").value),
         rebound_cm: lengthField("#ref-rebound", "Rebound", setupById(Number($("#ref-setup").value))?.drop_cm),
       });
-      $("#ref-rebound").value = "";
     });
   }
 
+  /** One pair per ball: the form stays open for the next ball, until Done. */
   function addConversion(e) {
+    $("#conv-done").textContent = "";
     return submitForm(e, "#conv-error", async () => {
+      const setupId = Number($("#conv-setup").value);
       await send("/api/bounce/conversions", "POST", {
-        setup_id: Number($("#conv-setup").value),
-        rebound_cm: lengthField("#conv-rebound", "Your rebound", setupById(Number($("#conv-setup").value))?.drop_cm),
+        setup_id: setupId,
+        rebound_cm: lengthField("#conv-rebound", "Your rebound", setupById(setupId)?.drop_cm),
         itf_rebound_cm: lengthField("#conv-itf", "ITF rebound", state.bounce.settings?.itf_drop_cm),
       });
+      const n = state.bounce.conversions.filter((c) => c.setup_id === setupId).length + 1;
+      $("#conv-done").textContent = `Pair added: ${plural(n, "pair")} for this setup. Next ball?`;
       $("#conv-rebound").value = "";
       $("#conv-itf").value = "";
-      $("#conv-rebound").focus(); // next ball
-    });
+      $("#conv-rebound").focus();
+    }, true);
   }
 
   // Batch dialog (new and edit).
@@ -1078,7 +1198,7 @@
     f.reset();
     f.dataset.batch = b.id;
     f.dataset.test = t ? t.id : "";
-    $("#test-title").textContent = `${t ? "Edit test" : "Bounce test"} · ${batchName(b)}`;
+    $("#test-title").textContent = `${t ? "Edit test" : "Bounce test"}: ${batchName(b)}`;
     const last = b.tests[b.tests.length - 1];
     setupOptions($("#test-setup"), () => true, t ? t.setup_id : last ? last.setup_id : null);
     const ctx = $("#test-context");
@@ -1182,7 +1302,7 @@
       c.input.title = `${Math.abs(z).toFixed(1)} sd ${z < 0 ? "below" : "above"} the other drops `
         + `(${fmtLen(fit.mean_cm)} ±${toLen(fit.sd_cm).toFixed(1)}): a typo?`;
     });
-    outlierNote = k ? ` · ${misfits(k)} (highlighted): a typo?` : "";
+    outlierNote = k ? `. ${misfits(k)} (highlighted): a typo?` : "";
     updateTestSummary(false);
   }
 
@@ -1198,10 +1318,10 @@
     const n = meds.length;
     const mean = n ? meds.reduce((a, b) => a + b, 0) / n : null;
     const sd = n > 1 ? Math.sqrt(meds.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)) : null;
-    const problems = bad ? ` · ${bad} box${bad === 1 ? " needs" : "es need"} fixing` : "";
+    const problems = bad ? `. ${bad} box${bad === 1 ? " needs" : "es need"} fixing` : "";
     $("#test-summary").textContent = n
-      ? `${n} ball${n === 1 ? "" : "s"} · average ${mean.toFixed(1)} ${state.lengthUnit}`
-        + `${sd != null ? ` · spread ±${sd.toFixed(1)}` : ""}${outlierNote}${problems}`
+      ? `${n} ball${n === 1 ? "" : "s"}, average ${mean.toFixed(1)} ${state.lengthUnit}`
+        + `${sd != null ? `, spread ±${sd.toFixed(1)}` : ""}${outlierNote}${problems}`
       : `No drops entered yet${problems}.`;
   }
 
@@ -1271,12 +1391,13 @@
       const [bounce, charge] = await Promise.all([api("/api/bounce"), api("/api/charge")]);
       Object.assign(state.bounce, bounce);
       state.charge = charge;
+      loaded.bounce = true;
       renderBounce();
       renderCards(); // which batch is in which canister
       charts.pressure?.redraw(false); // session marks
       charts.temp?.redraw(false);
     } catch (e) {
-      setStatus(false, `Offline — retrying (${e.message})`);
+      setStatus(false, `Offline, retrying (${e.message})`);
     }
   }
 
@@ -1297,6 +1418,9 @@
   const fmtUntil = (ts) => new Date(ts * 1000).toLocaleString(undefined, {
     weekday: "short", month: "short", day: "numeric", hour: "numeric",
   });
+
+  /** "about 3 days", but plain "under an hour". */
+  const about = (seconds) => (seconds < 3600 ? fmtSpan(seconds) : `about ${fmtSpan(seconds)}`);
 
   function fmtSpan(seconds) {
     const h = seconds / 3600;
@@ -1346,11 +1470,11 @@
         const body = [`${est} now. They should be back at their new bounce around `
           + `${fmtUntil(serverNow() + a.hold_s)}${likely(a.hold_s_range)}.`];
         if (a.charge_s != null && a.hold_s > 1.5 * a.charge_s && a.hold_s - a.charge_s > 86400) {
-          body.push(`At ${up} it would take about ${fmtSpan(a.charge_s)}.`);
+          body.push(`At ${up} it would take ${about(a.charge_s)}.`);
         }
         return {
           mod: "wait", body,
-          head: `Keep ${can} at ${at} for about ${fmtSpan(a.hold_s)} more, then lower it to ${maint}.`,
+          head: `Keep ${can} at ${at} for ${about(a.hold_s)} more, then lower it to ${maint}.`,
         };
       }
       case "lower_now": {
@@ -1372,7 +1496,7 @@
         return {
           mod: "act",
           head: a.charge_s == null ? `Pump ${can} up to ${up}.`
-            : `Pump ${can} up to ${up} for about ${fmtSpan(a.charge_s)}, then lower it to ${maint}.`,
+            : `Pump ${can} up to ${up} for ${about(a.charge_s)}, then lower it to ${maint}.`,
           body: [`${est}. At ${at} they ${losing ? "are losing pressure" : "only hold where they are"}`
             + `${likely(a.charge_s_range)}.`],
         };
@@ -1397,7 +1521,7 @@
         }
         return {
           mod: "muted", head: `Out of a canister${losing ? `, ${losing}` : ""}.`,
-          body: [`${est}. To bring them back: about ${fmtSpan(a.charge_s)} at ${up}`
+          body: [`${est}. To bring them back: ${about(a.charge_s)} at ${up}`
             + `${likely(a.charge_s_range)}, then ${maint} to hold them.`],
         };
       }
@@ -1408,7 +1532,7 @@
         if (!c.reference) {
           return {
             mod: "muted", head: "No new-ball rebound to compare with.",
-            body: ["Test new balls of this kind, or enter a value under “New-ball reference values” on the Setup tab."],
+            body: ["Test new balls of this kind, or enter a value under “New-ball rebound values” on the Setup tab."],
           };
         }
         if (c.flags.includes("no_sensor")) {
@@ -1442,10 +1566,17 @@
         ? `Rates tuned on ${plural(c.model.pairs, "pair")} of tests (${c.model.rebound_pct_per_psi.toFixed(2)}% per psi).`
         : "Rates are starting values: tests before and after sessions tune them.");
     }
+    // Polls redraw the box: remember whether its explanation was open.
+    const why = foot.length ? el("details", { open: state.bounce.whyOpen.has(b.id) },
+      el("summary", {}, "Where this comes from"), el("p", {}, foot.join(" "))) : null;
+    why?.addEventListener("toggle", () => {
+      if (why.open) state.bounce.whyOpen.add(b.id);
+      else state.bounce.whyOpen.delete(b.id);
+    });
     return el("div", { class: `advice ${mod}` },
       el("strong", {}, head),
-      ...body.map((line) => el("div", {}, line)),
-      foot.length ? el("div", { class: "foot" }, foot.join(" ")) : null);
+      ...body.map((line) => el("p", {}, line)),
+      why);
   }
 
   /** A few words for a canister's card. */
@@ -1455,7 +1586,7 @@
     switch (a.status) {
       case "charging":
         return a.hold_s == null ? null
-          : { mod: "", text: `lower to ${fmtP(st.maintenance_kpa)} in about ${fmtSpan(a.hold_s)}` };
+          : { mod: "", text: `lower to ${fmtP(st.maintenance_kpa)} in ${about(a.hold_s)}` };
       case "lower_now": return { mod: "act", text: `lower to ${fmtP(st.maintenance_kpa)} now` };
       case "holding": return { mod: "ok", text: "holding" };
       case "raise": return { mod: "act", text: `pump up to ${fmtP(st.charge_kpa)}` };
@@ -1481,36 +1612,38 @@
   function bounceChartPanel(b, c) {
     const tol = state.charge.settings.like_new_tolerance_pct;
     const chart = c.reference && c.tests.length > 0;
+    const key = (cls, text) => el("li", {}, el("i", { class: cls }), text);
     return el("section", { class: "panel" },
       el("h3", {}, "Bounce over time"),
       chart ? el("div", { class: "chart batch-chart", "data-batch": b.id }) : null,
+      chart ? el("ul", { class: "key" },
+        key("k-band", `Within ±${tol}% of new`), key("k-shade", "In a canister"), key("k-play", "Play")) : null,
       el("p", { class: "hint" }, chart
-        ? `Bounce as a share of new (${fmtLen(c.reference.rebound_cm)}, from ${REF_SOURCE[c.reference.source]}). `
-          + `Dots are tests; the line is the estimate between them. Shaded: in a canister. `
-          + `Green band: within ±${tol}% of new. Dashed: play.`
+        ? `Bounce as a share of new: ${fmtLen(c.reference.rebound_cm)}, from ${REF_SOURCE[c.reference.source]}. `
+          + "Dots are bounce tests, and the line is the estimate between them."
         : !c.tests.length ? "The chart starts with the first bounce test."
           : "Needs a new-ball rebound to compare with: test new balls of this kind, or enter a value on the Setup tab."));
   }
 
-  function sessionsPanel(b, c) {
+  function sessionsBody(b, c) {
     const t = c.totals;
-    return el("section", { class: "panel" },
-      el("h3", {}, `Charge sessions${t.sessions ? ` (${t.sessions})` : ""}`),
-      t.sessions ? el("div", { class: "sub" }, `${t.canister_days.toFixed(1)} days in a canister in all`) : null,
+    return [
+      t.sessions ? el("p", { class: "sub" }, `${t.canister_days.toFixed(1)} days in a canister in all.`) : null,
       c.sessions.length ? sessionsTable(b, c)
-        : el("p", { class: "hint" }, "None yet. Start one when the balls go into a canister and it's pumped up."));
+        : el("p", { class: "hint" }, "No charge sessions yet. Start one when the balls go into a canister and it's pumped up."),
+    ].filter(Boolean);
   }
 
-  function playsPanel(b, c) {
+  function playsBody(c) {
     const t = c.totals;
-    return el("section", { class: "panel" },
-      el("h3", {}, `Play${t.plays ? ` (${t.plays})` : ""}`),
-      t.play_hours ? el("div", { class: "sub" }, `${t.play_hours.toFixed(1)} h noted in all`) : null,
+    return [
+      t.play_hours ? el("p", { class: "sub" }, `${t.play_hours.toFixed(1)} h of play noted in all.`) : null,
       c.plays.length ? el("ul", { class: "mini" }, ...[...c.plays].reverse().map((p) => el("li", {},
-        el("span", {}, `${fmtDateTime(p.ts)} · played ${p.hours != null ? `${p.hours} h` : "(hours not noted)"}`,
-          p.note ? ` · ${p.note}` : ""),
+        el("span", {}, el("strong", {}, p.hours != null ? `${p.hours} h` : "Hours not noted"),
+          el("span", { class: "sub" }, fmtDateTime(p.ts), p.note ? `. ${p.note}` : "")),
         delButton("Delete play", () => removeItem(`/api/charge/plays/${p.id}`, `Delete the play of ${fmtDateTime(p.ts)}?`)))))
-        : el("p", { class: "hint" }, "None logged. Log play when you use the balls, with the hours if you know them."));
+        : el("p", { class: "hint" }, "No play logged yet. Log play when you use the balls, with the hours if you know them."),
+    ].filter(Boolean);
   }
 
   function sessionsTable(b, c) {
@@ -1640,7 +1773,7 @@
     f.dataset.batch = b.id;
     f.dataset.session = s ? s.id : "";
     $("#session-title").textContent =
-      `${ending ? "End charge session" : s ? "Edit charge session" : "Start charge session"} · ${batchName(b)}`;
+      `${ending ? "End charge session" : s ? "Edit charge session" : "Start charge session"}: ${batchName(b)}`;
     const macs = state.canisters.map((c) => c.mac);
     if (s?.mac && !macs.includes(s.mac)) macs.push(s.mac);
     const select = $("#session-mac");
@@ -1701,7 +1834,7 @@
     const f = $("#play-form");
     f.reset();
     f.dataset.batch = b.id;
-    $("#play-title").textContent = `Log play · ${batchName(b)}`;
+    $("#play-title").textContent = `Log play: ${batchName(b)}`;
     $("#play-error").textContent = "";
     $("#play-dialog").showModal();
     $("#play-hours").focus();
@@ -1740,8 +1873,9 @@
       state.skew = body.now - (sent + Date.now() / 1000) / 2;
       state.settings = body.settings;
       state.canisters = body.canisters;
+      loaded.canisters = true;
       for (const c of state.canisters) colorFor(c.mac); // stable colors in card order
-      // Batch cards name canisters: redraw them when the names arrive or change.
+      // Batch pages name canisters: redraw them when the names arrive or change.
       const names = state.canisters.map((c) => `${c.mac}=${c.canister}`).join();
       if (names !== state.canisterNames) {
         state.canisterNames = names;
@@ -1753,7 +1887,7 @@
       renderCanisterOptions($("#table-mac"));
       setStatus(true, `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}`);
     } catch (e) {
-      setStatus(false, `Offline — retrying (${e.message})`);
+      setStatus(false, `Offline, retrying (${e.message})`);
     }
   }
 
@@ -1773,7 +1907,7 @@
       renderCharts();
       renderEvents();
     } catch (e) {
-      setStatus(false, `Offline — retrying (${e.message})`);
+      setStatus(false, `Offline, retrying (${e.message})`);
     }
   }
 
@@ -1828,7 +1962,7 @@
     bindSegment("#temp-units", () => state.tempUnit, (v) => {
       state.tempUnit = v; renderCards(); renderCharts(); renderTable(); renderBatches();
     });
-    bindSegment("#length-units", () => state.lengthUnit, (v) => { state.lengthUnit = v; renderBounce(); });
+    bindSegment("#length-units", () => state.lengthUnit, (v) => { state.lengthUnit = v; renderBounce(); renderCards(); });
     bindSegment("#ranges", () => state.range, (v) => {
       state.range = v === "fill" ? "fill" : Number(v);
       state.table.rows = []; // new range: start from one page again
@@ -1846,6 +1980,7 @@
     $("#event-form").addEventListener("submit", addEvent);
 
     for (const b of document.querySelectorAll(".batch-new")) b.addEventListener("click", () => openBatch());
+    for (const b of document.querySelectorAll("[data-open]")) b.addEventListener("click", () => openForm(b.dataset.open));
     $("#batch-form").addEventListener("submit", saveBatch);
     $("#batch-n").addEventListener("input", updateSampleHint);
     $("#batch-sample").addEventListener("input", (e) => { e.target.dataset.auto = ""; updateSampleHint(); });
@@ -1867,7 +2002,7 @@
     $("#table-mac").addEventListener("change", (e) => {
       state.table.mac = e.target.value;
       state.table.rows = [];
-      loadTable().catch((ex) => setStatus(false, `Offline — retrying (${ex.message})`));
+      loadTable().catch((ex) => setStatus(false, `Offline, retrying (${ex.message})`));
     });
     $("#table-more").addEventListener("click", loadMore);
 
@@ -1886,7 +2021,7 @@
     setInterval(refreshCanisters, POLL_CANISTERS_MS);
     setInterval(refreshReadings, POLL_READINGS_MS);
     setInterval(refreshBounce, POLL_READINGS_MS); // other devices may add tests
-    setInterval(renderCards, 15_000); // keep "updated X ago" current
+    setInterval(updateAges, 15_000);
   }
 
   init();

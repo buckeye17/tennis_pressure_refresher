@@ -337,7 +337,8 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 **The laptop web app, Ball Bounce Tracker** (`video/app.py`).
 - `ball-bounce-tracker` with no arguments starts a small Flask server on the laptop and opens it in the browser. It listens on `http://127.0.0.1:5100`, the laptop only (`--port`). `--pi URL` sets the Pi (default `http://canisters.local:5000`); `--no-browser` skips opening the browser.
 - One session at a time. A background worker runs capture and analysis (`pipeline.Analyzer`, the same code as for clips). The page polls `/api/state` a few times a second for status, drops and progress, and shows the preview from `/preview.mjpg`.
-- The page shows three steps at the top, **Set up**, **Measure** and **Review and save**, and lays itself out for the one in progress (`main[data-phase]`): the set-up form and sources beside a how-to-film diagram; then the camera picture beside the prompt, drops and picture tools; then the result and Save beside the drops to check.
+- The page shows three steps at the top, **Set up**, **Measure** and **Review and save**, and lays itself out for the one in progress (`main[data-phase]`): what you're testing beside the choice of video, over a how-to-film diagram; then the camera picture under the prompt, with the buttons, drops and picture tools beside it; then the result and Save beside the drops to check.
+- The prompt is a band of large type over the picture, because it is read from the drop line, 2–3 m from the laptop, with a ball in one hand.
 - **1. Set up.** The page shows whether the Pi is reachable. Pick the batch and setup from the Pi's lists; drop height and mid mark come from the setup. Drops per ball defaults to 3.
 - **2. Source.**
   - **A webcam:** OpenCV can't list camera names, so indices 0–4 are probed and shown with the size each delivers.
@@ -787,17 +788,21 @@ Validate query params; return 400 with `{"error": "..."}` on bad input (404 for 
 Plain HTML/CSS/vanilla JS. No build step. uPlot vendored at `static/vendor/uplot/` (JS + CSS, pinned version, license file included).
 
 Layout: four tabs beside the title, with the auto-refresh indicator. The address names the tab (`#pressure`, or `#balls/3` for a batch), so Back works and a tab can be bookmarked. Charts are drawn when their tab opens, since a hidden chart has no width.
-- **Overview:** what to look at and do now. The canister cards (2), then a card per batch that isn't retired: its advice (§6.4), latest test, and **Bounce test**, **Start / End charge session** and **Log play**.
-- **Pressure:** the time range and the "Raw vs temperature-compensated" toggle, which apply to the whole tab, then the charts (3, 4), the events panel (5) beside the readings table, and the export link (6).
-- **Balls:** a list of batches beside one batch's page: summary and advice, bounce over time, bounce tests, charge sessions, play. Edit, Retire and Delete are on that page.
-- **Setup:** what is set once. Units (psi / kPa / bar; °F / °C, defaulting to °F for en-US browsers, since the vendor app shows °F; in / cm), test setups, new-ball reference values, the ITF conversion, and the bounce CSV.
+- **Overview:** what to look at and do now, one card per real thing. Each canister card (2) holds the batches inside it: their advice (§6.4), bounce scale, latest test, and **Bounce test**, **Start / End charge session** and **Log play**. Batches that aren't in a listed canister, and aren't retired, follow as cards of their own.
+- **Pressure:** the time range and the "Raw vs temperature-compensated" toggle, which apply to the whole tab, then the charts (3, 4) with the export link (6), then the notes (5) beside the readings table.
+- **Balls:** a row of batches to pick from, over one batch's page: summary and advice beside its bounce scale, bounce over time, then its records one kind at a time (bounce tests, charge sessions, play). Edit, Retire and Delete are on that page.
+- **Setup:** what is set once. Units (psi / kPa / bar; °F / °C, defaulting to °F for en-US browsers, since the vendor app shows °F; in / cm), test setups, new-ball rebound values, the ITF conversion, and the bounce CSV. Each list has one button that opens its form.
+
+Everything that is entered is entered in a dialog: a batch, a bounce test, a charge session, play, a note, a setup, a reference value, conversion pairs. The pages themselves only show.
+
+The look, shared with Ball Bounce Tracker (§6.3): a court-blue band with a white line for the title and tabs, a chalk page, and optic yellow for one thing only, the ball. Headings and figures use a DIN-style face already on the device (Bahnschrift, DIN Alternate, Roboto Condensed), so no font is fetched. The two stylesheets repeat the same colour tokens.
 
 The pieces:
 1. **Header:** title, tabs, auto-refresh indicator.
-2. **Canister cards:** one per sensor. Large current gauge pressure, compensated pressure beneath, temperature, battery, RSSI, "updated 4 min ago". Card turns amber when stale. Unassigned sensors show their MAC and a hint to add them to `config.toml`.
+2. **Canister cards:** one per sensor. Large current gauge pressure, a bar placing it against the maintenance and charge pressures (§6.4), then compensated pressure, temperature, battery and RSSI when the sensor reports them, the trend, and "Updated 4 min ago". The reading turns amber when stale. Unassigned sensors show their MAC and a hint to add them to `config.toml`. Beside the reading (under it on a phone) are the batches inside the canister. A batch's estimated bounce is drawn as a ball on a scale of its new-ball bounce, with the like-new band marked.
 3. **Chart:** all canisters overlaid, one line each. Time range buttons: 6 h, 24 h, 3 d, 7 d, All. Lines drawn as steps (value holds until next reading). Event annotations drawn as vertical markers with tooltips.
 4. **Temperature chart:** smaller chart below, same time axis, so temperature-driven swings are obvious.
-5. **Events panel:** list of annotations plus a small form to add one (canister dropdown incl. "All", kind, note).
+5. **Notes:** list of annotations, and an **Add note** button that opens the form (canister dropdown incl. "All", kind, when, note).
 6. **Export link** for the current time range.
 
 Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refreshes call `setData` on existing charts so a zoom isn't reset each minute. "Updated X ago" uses the server's clock (skew measured on each poll), not the phone's. Persist units/temperature units/toggle/range choices in `localStorage`. Must work on a phone screen. Respect `prefers-color-scheme` for dark mode.

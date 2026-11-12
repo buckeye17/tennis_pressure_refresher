@@ -8,10 +8,12 @@
   const PREFS_KEY = "ball-bounce-tracker-prefs";
   const OLD_PREFS_KEY = "canister-video-prefs";  // before the rename: read if the new key is unset
   const CM_PER_IN = 2.54;
+  // The same words as the dashboard's bounce-test form.
   const CONTEXT_LABELS = {
-    new: "New balls", before: "Before refill", after: "After refill",
-    after_play: "After play", other: "Other",
+    new: "New, straight from the can", before: "Before a canister session",
+    after: "After a canister session", after_play: "After play", other: "Other",
   };
+  const CONTEXT_SHORT = { new: "New", before: "Before", after: "After", after_play: "After play", other: "Other" };
 
   const $ = (sel) => document.querySelector(sel);
   const el = (tag, attrs = {}, ...kids) => {
@@ -137,7 +139,7 @@
 
   async function loadPi() {
     const pill = $("#pi-status");
-    pill.textContent = "Pi: checking…";
+    pill.textContent = "Checking the Pi…";
     pill.className = "pill";
     try {
       ui.pi = await api("GET", "/api/pi");
@@ -145,7 +147,7 @@
       ui.pi = { ok: false, error: e.message };
     }
     const host = (() => { try { return new URL(document.documentElement.dataset.piUrl).host; } catch { return "Pi"; } })();
-    pill.textContent = ui.pi.ok ? `Pi: connected (${host})` : `Pi: not reachable (${host})`;
+    pill.textContent = ui.pi.ok ? `Pi connected (${host})` : `Pi not reachable (${host})`;
     pill.className = `pill ${ui.pi.ok ? "ok" : "bad"}`;
     pill.title = ui.pi.error || "";
     $("#pi-retry").hidden = ui.pi.ok;
@@ -167,14 +169,14 @@
     const batchSel = $("#batch");
     batchSel.replaceChildren(
       ...batches.map((b) => el("option", { value: b.id },
-        `${b.brand} ${b.model} · opened ${new Date(b.opened_ts * 1000).toLocaleDateString()} · ${b.sample_size} balls`)),
+        `${b.brand} ${b.model}, opened ${new Date(b.opened_ts * 1000).toLocaleDateString()}, ${b.sample_size} balls`)),
     );
     if (!batches.length) batchSel.append(el("option", { value: "" }, "No batches: add one on the dashboard"));
     if (batches.some((b) => b.id === prefs.batchId)) batchSel.value = prefs.batchId;
 
     const setupSel = $("#setup");
     setupSel.replaceChildren(
-      ...pi.setups.map((s) => el("option", { value: s.id }, `${s.name} · ${fmt(s.drop_cm, 1)} drop`)),
+      ...pi.setups.map((s) => el("option", { value: s.id }, `${s.name}, ${fmt(s.drop_cm, 1)} drop`)),
     );
     if (!pi.setups.length) setupSel.append(el("option", { value: "" }, "No setups: add one on the dashboard"));
     if (pi.setups.some((s) => s.id === prefs.setupId)) setupSel.value = prefs.setupId;
@@ -419,17 +421,20 @@
   function renderReview(st) {
     const rev = st.review;
     const p = st.params || {};
-    const what = [p.batch_label, p.setup_name, CONTEXT_LABELS[p.context] || p.context,
+    const what = [p.batch_label, p.setup_name, CONTEXT_SHORT[p.context] || p.context,
       `${fmt(p.drop_height_cm, 1)} drop`, st.file].filter(Boolean);
-    $("#review-what").textContent = what.join(" · ");
+    $("#review-what").textContent = what.join(", ");
     $("#reanalyse-open").hidden = !st.file;
 
     const s = rev.summary;
     $("#medians tbody").replaceChildren(...s.medians.map((m) => el("tr", {},
       el("td", {}, `${m.ball_no}`), el("td", { class: "num" }, fmt(m.rebound_cm)), el("td", { class: "num" }, `${m.drops}`))));
-    $("#review-mean").textContent = s.balls
-      ? `Average ${fmt(s.mean_cm)} over ${s.balls} ball${s.balls > 1 ? "s" : ""}${s.sd_cm != null ? ` (± ${fmt(s.sd_cm)})` : ""}`
-      : "No drops kept.";
+    // The average is the figure; how many balls and how spread out goes under it.
+    $("#review-mean").replaceChildren(...(s.balls ? [
+      el("span", { class: "figure" }, toUnit(s.mean_cm).toFixed(units() === "in" ? 2 : 1), el("small", {}, units())),
+      el("span", { class: "about" }, `Average of ${s.balls} ball${s.balls > 1 ? "s" : ""}`
+        + (s.sd_cm != null ? `, ± ${fmt(s.sd_cm)} between them` : "")),
+    ] : [el("span", { class: "about" }, "No drops kept.")]));
     const fit = s.drops_fit;
     let fitText = "";
     if (fit) {
@@ -585,8 +590,9 @@
     const items = ui.outbox;
     $("#outbox-card").hidden = !items.length || !["idle", "review"].includes(ui.state.phase);
     $("#outbox-list").replaceChildren(...items.map((it) => el("li", {},
-      `${it.batch || "Batch ?"} · ${CONTEXT_LABELS[it.context] || it.context || ""}`,
-      el("span", { class: "muted" }, `${it.ts ? new Date(it.ts * 1000).toLocaleString() : ""} · ${it.drops} drops · ${it.file}`))));
+      [it.batch || "Unknown batch", CONTEXT_SHORT[it.context] || it.context].filter(Boolean).join(", "),
+      el("span", { class: "muted" },
+        [it.ts ? new Date(it.ts * 1000).toLocaleString() : null, `${it.drops} drops`, it.file].filter(Boolean).join(", ")))));
   }
 
   async function sendOutbox() {

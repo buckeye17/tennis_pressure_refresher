@@ -76,14 +76,14 @@ Re-running the installer is safe: it keeps your `config.toml` and data.
 
 ## Ball batches and bounce tests
 
-The dashboard has four tabs. **Overview** shows each canister and what to do with each batch of
-balls now. **Pressure** has the charts, your notes and the readings. **Balls** has a page per
-batch. **Setup** holds what you set once: units, test setups and reference values.
+The dashboard has four tabs. **Overview** shows each canister with the balls inside it, and what
+to do with them now. **Pressure** has the charts, your notes and the readings. **Balls** has a
+page per batch. **Setup** holds what you set once: units, test setups and reference values.
 
 The app tracks how your balls bounce, as planned in [PLAN.md §6.2](PLAN.md):
 
-1. **Add a test setup once**, on the Setup tab: the drop height and surface you'll always use. Tick *ITF method* if you
-   drop from 100 in onto concrete.
+1. **Add a test setup once** (*Add setup*, on the Setup tab): the drop height and surface you'll
+   always use. Tick *ITF method* if you drop from 100 in onto concrete.
 2. **Add a batch** (*New batch*, on Overview or Balls) when you open new balls. For more than 12 balls, pick 10 at random, number them
    1–10 with a marker, and always test those same balls.
 3. **Bounce test** new balls straight from the can, then before and after each canister session.
@@ -96,8 +96,9 @@ The app tracks how your balls bounce, as planned in [PLAN.md §6.2](PLAN.md):
 
 ### Charge sessions: how long to keep the pressure up
 
-Each batch's card follows it from new through play and canister sessions, and says what to do
-with the canister now. The aim is to bring the balls back to their new-ball bounce, then hold
+Each batch follows its balls from new through play and canister sessions. On the Overview it
+sits inside its canister's card and says what to do with the canister now, beside a ball on a
+scale: where their bounce is against new, with the like-new range marked. The aim is to bring the balls back to their new-ball bounce, then hold
 them there for as long as it takes until you next play.
 
 1. **Start charge session** when the balls go into a canister and you pump it up (about 30 psi).
@@ -110,8 +111,9 @@ them there for as long as it takes until you next play.
 4. **End charge session** when the balls come out to play, then **Log play** with the hours.
 
 A batch's page on the **Balls** tab charts its bounce as a share of new: dots for tests, a line
-for the estimate between them, shading for time in a canister. Under it are its bounce tests,
-then each session with its pressure and the bounce before and after, then play.
+for the estimate between them, shading for time in a canister. Under it, switch between its
+bounce tests, its charge sessions (each with its pressure and the bounce before and after), and
+play.
 
 The estimate comes from the latest bounce test and the canister pressure measured since, so it is
 only as good as the rates it assumes. They start as guesses in `config.toml` under `[charge]`, and
@@ -137,7 +139,8 @@ the app fills it in. The top of the page shows where you are: *Set up*, *Measure
 
 1. Pick the batch, setup and stage. Then pick a webcam, or drop in a phone clip.
 2. Start with three holds, the ball still on the floor, at the mid mark, then at the drop mark.
-   Then drop each numbered ball in order and catch it after its first bounce.
+   Then drop each numbered ball in order and catch it after its first bounce. The band over the
+   picture says what to do next, in type large enough to read from the drop line.
 3. **Review** each drop's picture. Beside it, a full-resolution close-up of the ball at its apex
    has a green line where the measurement put the bottom of the ball. Fix a height, move a drop
    to another ball, or untick Keep.
@@ -185,7 +188,7 @@ shows updates the dashboard misses, try Ethernet instead of Wi-Fi, or move the P
 network time (`systemd-time-wait-sync`); check `timedatectl` shows `System clock synchronized:
 yes`.
 
-**Dashboard shows "Offline — retrying".** The web service is down or unreachable:
+**Dashboard shows "Offline, retrying".** The web service is down or unreachable:
 `systemctl status canister-web`. If `canisters.local` doesn't resolve, use the Pi's IP address.
 
 ## Development (any computer, no Bluetooth needed)

@@ -115,6 +115,16 @@ the app fills it in.
 If the Pi doesn't answer, the test is kept in `recordings/` and listed under **Waiting to be sent**.
 Press **Send now** when the Pi is back. Recordings of live sessions stay in `recordings/` too.
 
+A session set up with the Pi away can't be saved from the app, because it has no batch or setup.
+Download its JSON, then send it with the batch, setup and stage (`--list` shows the ids):
+
+```bash
+uv run python tools/import_review.py --list
+uv run python tools/import_review.py bounce-test-20261111-1951.json --batch 2 --setup 1 --context before --temp 68F
+```
+
+`--dry-run` checks everything without sending. Importing the same file again updates its test.
+
 ## How the sensors behave
 
 - They **only broadcast under pressure**. An unscrewed or empty sensor goes silent, and its card

@@ -356,7 +356,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
   - **Save to Pi** creates the bounce test, `source = video`, with the analysis details and pictures, in one request. The room temperature is pre-filled from the batch's canister sensor (else any fresh one), as on the dashboard, and a note can be added.
   - Each review has a key, kept through Analyse again. Saving again, after more edits or after a reply was lost, replaces that test on the Pi instead of adding a second one.
   - If the Pi can't be reached (or fails itself), the test is kept in `recordings/<video name>.unsent.json` and listed under **Waiting to be sent**, with **Send now**. Once sent it's renamed `.sent.json`. A test the Pi refuses (a 4xx, e.g. the batch was deleted) isn't kept: the app shows why.
-  - Only a session set up with a batch and setup from the Pi can be saved. One measured with the Pi away at set-up can still be downloaded as JSON.
+  - Only a session set up with a batch and setup from the Pi can be saved. One measured with the Pi away at set-up can still be downloaded as JSON, then sent with `tools/import_review.py`. It takes the batch, setup and stage (and optionally the room temperature and a note), checks that the setup's drop height is the one the session used and that the batch has every kept ball, and posts the file to the same endpoint. Its key comes from the video's name and start time, so importing a file again updates its test.
 - The **command line** stays for scripting and debugging: `ball-bounce-tracker CLIP --drop-height 72in --mid-mark 36in --dry-run [--json] [--debug DIR]`.
 
 **Finding the ball** (`video/detect.py`).

@@ -682,7 +682,8 @@
         ].filter(Boolean)))));
   }
 
-  /** A video test's drops as pictures, in the order they were dropped; rejected ones dimmed. */
+  /** A video test's drops as pictures, in the order they were dropped, each with its
+   *  full-resolution apex close-up under it; rejected ones dimmed. */
   function picturesRow(t, columns) {
     const seen = new Map();
     const figures = t.video.drops.map((d) => {
@@ -690,11 +691,17 @@
       seen.set(d.ball_no, n);
       const height = d.edited_cm ?? d.rebound_cm;
       const src = `/api/bounce/video-drops/${d.id}.jpg`;
+      const closeup = `/api/bounce/video-drops/${d.id}/closeup.jpg`;
       return el("figure", { class: `drop-pic${d.kept ? "" : " rejected"}`, title: d.warnings.join("\n") || null },
         d.image
           ? el("a", { href: src, target: "_blank", rel: "noopener" },
             el("img", { src, alt: `Ball ${d.ball_no}, drop ${n}`, loading: "lazy" }))
           : el("div", { class: "no-pic" }, "no picture"),
+        d.closeup
+          ? el("a", { href: closeup, target: "_blank", rel: "noopener", class: "closeup" },
+            el("img", { src: closeup, alt: `Ball ${d.ball_no}, drop ${n}: the ball at its apex`, loading: "lazy",
+              title: "The ball at its apex, full resolution. The green line is where the measurement put the bottom of the ball." }))
+          : null,
         el("figcaption", {}, `Ball ${d.ball_no}.${n} · ${height == null ? "—" : fmtLen(height)}`,
           d.edited_cm != null ? el("span", { class: "tag" }, "edited") : null,
           d.kept ? null : el("span", { class: "tag" }, "rejected"),

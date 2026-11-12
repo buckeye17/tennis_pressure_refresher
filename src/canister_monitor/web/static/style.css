@@ -280,6 +280,7 @@ a { color: var(--accent); }
 .drop-pic { margin: 0; width: 132px; font-size: 0.75rem; }
 .drop-pic img, .drop-pic .no-pic { display: block; width: 132px; height: 176px; object-fit: contain; background: #000; border-radius: 4px; }
 .drop-pic .no-pic { color: #aaa; display: grid; place-items: center; }
+.drop-pic .closeup img { height: 132px; margin-top: 4px; object-fit: cover; image-rendering: pixelated; }
 .drop-pic.rejected { opacity: 0.45; }
 .drop-pic figcaption { margin-top: 2px; white-space: normal; }
 .drop-pic .tag { margin-left: 4px; }

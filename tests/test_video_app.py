@@ -200,7 +200,7 @@ def review_of(heights: list[float]) -> Review:
         )
         for i, h in enumerate(heights)
     ]
-    analyzer = SimpleNamespace(result=SimpleNamespace(entries=entries, images={}))
+    analyzer = SimpleNamespace(result=SimpleNamespace(entries=entries, images={}, closeups={}))
     return Review(analyzer, Params(drop_height_cm=200.66, mid_mark_cm=100.33))
 
 
@@ -307,9 +307,11 @@ def test_live_session_end_to_end(tmp_path):
     assert [d["seq"] for d in rev["drops"]] == [0, 1, 3]
     for d, t in zip(rev["drops"], [truth[0], truth[1], truth[3]], strict=True):
         assert d["measured_cm"] == pytest.approx(corrected(t), rel=0.005)
-        assert d["image"]
-    img = client.get("/api/drops/0.jpg")
-    assert img.mimetype == "image/jpeg" and img.data[:2] == b"\xff\xd8"
+        assert d["image"] and d["closeup"]
+    for url in ("/api/drops/0.jpg", "/api/drops/0/closeup.jpg"):
+        img = client.get(url)
+        assert img.mimetype == "image/jpeg" and img.data[:2] == b"\xff\xd8"
+    assert client.get("/api/drops/42/closeup.jpg").status_code == 404
 
     # Review edits: type over one height, reject one drop, move one to another ball.
     assert client.post("/api/review/0", json={"edited_cm": 999}).status_code == 400
@@ -335,6 +337,7 @@ def test_live_session_end_to_end(tmp_path):
     ]
     assert doc["drops"][0]["detail"]["rows"]["apex"] > 0
     assert len(doc["drops"][0]["image_jpeg"]) > 1000
+    assert len(doc["drops"][0]["closeup_jpeg"]) > 1000
     assert doc["analysis"]["video"]["calibration"]["method"] == "projective"
     assert doc["analysis"]["filename"] == st["file"]
 

@@ -94,6 +94,37 @@ def new_batch(conn, **kw):
     return db.insert_batch(conn, **fields)
 
 
+def test_migration_from_v4_keeps_video_drops_without_closeups(tmp_path):
+    path = tmp_path / "v4.db"
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for version, sql in enumerate(db.MIGRATIONS[:4], start=1):
+        c.executescript(sql)
+        c.execute("INSERT INTO schema_version VALUES (?)", (version,))
+    c.executescript(
+        """
+        INSERT INTO bounce_setups (id, name, drop_cm) VALUES (1, 'Hall', 200);
+        INSERT INTO ball_batches (id, brand, model, opened_ts, n_balls, sample_size)
+            VALUES (1, 'P', 'C', 1, 3, 3);
+        INSERT INTO bounce_tests (id, ts, batch_id, setup_id, context, source)
+            VALUES (1, 2, 1, 1, 'new', 'video');
+        INSERT INTO bounce_video_analyses (id, test_id, save_key, filename, video_json,
+            params_json) VALUES (1, 1, 'old-key-1', 'a.mp4', '{}', '{}');
+        INSERT INTO bounce_video_drops (id, analysis_id, seq, ball_no, rebound_cm, kept,
+            detail_json, image) VALUES (1, 1, 0, 1, 110.0, 1, '{}', X'FFD8FFD9');
+        """
+    )
+    c.commit()
+    c.close()
+    conn = db.connect(path)
+    assert db.schema_version(conn) == db.SCHEMA_VERSION
+    [drop] = db.list_video_analyses(conn)[1].drops
+    assert drop.has_image and not drop.has_closeup
+    assert db.video_drop_image(conn, 1) == b"\xff\xd8\xff\xd9"
+    assert db.video_drop_image(conn, 1, closeup=True) is None
+    conn.close()
+
+
 def test_migration_from_v2_keeps_events(tmp_path):
     path = tmp_path / "old.db"
     c = sqlite3.connect(path)
@@ -425,6 +456,7 @@ def test_outlier_check_for_the_test_form(seeded):
 # --- video tests (PLAN.md 6.3) ---------------------------------------------------------
 
 JPEG = base64.b64encode(b"\xff\xd8\xff\xe0 a tiny picture \xff\xd9").decode()
+CLOSEUP = base64.b64encode(b"\xff\xd8\xff\xe0 the ball at its apex \xff\xd9").decode()
 
 
 def video_doc(setup, batch, key="session-0001", **test):
@@ -437,6 +469,7 @@ def video_doc(setup, batch, key="session-0001", **test):
     for d in drops:
         d |= {"outlier_z": None, "detail": {"warnings": ["release 2.2 cm high"]}}
         d["image_jpeg"] = JPEG
+        d["closeup_jpeg"] = CLOSEUP if d["kept"] else None
     return {
         "key": key,
         "tool": "ball-bounce-tracker 0.1",
@@ -511,9 +544,14 @@ def test_video_test_saved_with_its_pictures_and_saved_again_in_place(seeded):
         (2, True, 109.5),
     ]
     assert all(d["image"] for d in video["drops"])
+    assert [d["closeup"] for d in video["drops"]] == [True, False, True]
     assert video["drops"][0]["warnings"] == ["release 2.2 cm high"]
-    pic = client.get(f"/api/bounce/video-drops/{video['drops'][0]['id']}.jpg")
-    assert pic.mimetype == "image/jpeg" and pic.data[:2] == b"\xff\xd8"
+    first, rejected = (d["id"] for d in video["drops"][:2])
+    pic = client.get(f"/api/bounce/video-drops/{first}.jpg")
+    assert pic.mimetype == "image/jpeg" and b"tiny picture" in pic.data
+    closeup = client.get(f"/api/bounce/video-drops/{first}/closeup.jpg")
+    assert closeup.mimetype == "image/jpeg" and b"at its apex" in closeup.data
+    assert client.get(f"/api/bounce/video-drops/{rejected}/closeup.jpg").status_code == 404
     assert client.get("/api/bounce/video-drops/999.jpg").status_code == 404
 
     # The same review saved again (edited since): the same test, replaced.
@@ -554,6 +592,7 @@ def test_video_test_saved_with_its_pictures_and_saved_again_in_place(seeded):
         (lambda d: d["drops"][0].update(rebound_cm=190.0), "no higher than the drop height"),
         (lambda d: d["drops"][0].update(image_jpeg="bm90IGEganBlZw=="), "base64 JPEG"),
         (lambda d: d["drops"][0].update(image_jpeg="%%%"), "base64 JPEG"),
+        (lambda d: d["drops"][0].update(closeup_jpeg="bm90IGEganBlZw=="), "closeup_jpeg must be"),
         (lambda d: d["drops"][0].update(colour="red"), "unknown"),
         (lambda d: d["drops"][2].update(seq=0), "unique"),
         (lambda d: [x.update(kept=False) for x in d["drops"]], "no drops are kept"),

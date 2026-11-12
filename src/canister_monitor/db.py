@@ -152,6 +152,10 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_bounce_video_drops_analysis ON bounce_video_drops(analysis_id, seq);
     """,
+    # 5: a full-resolution close-up of the ball at its apex, beside each drop's picture
+    """
+    ALTER TABLE bounce_video_drops ADD COLUMN closeup BLOB;
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -841,6 +845,7 @@ class VideoDrop:
     edited_cm: float | None  # typed over the measurement in review
     detail: dict  # rows, times, fit residuals, warnings
     image: bytes | None = None  # JPEG of the drop with its lines drawn
+    closeup: bytes | None = None  # JPEG of the ball at its apex, full resolution
 
 
 @dataclass(frozen=True)
@@ -855,6 +860,7 @@ class VideoDropInfo:
     edited_cm: float | None
     has_image: bool
     warnings: tuple[str, ...]
+    has_closeup: bool = False
 
 
 @dataclass(frozen=True)
@@ -913,8 +919,9 @@ def save_video_test(
             created = False
         conn.executemany(
             """INSERT INTO bounce_video_drops
-               (analysis_id, seq, ball_no, rebound_cm, kept, edited_cm, detail_json, image)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (analysis_id, seq, ball_no, rebound_cm, kept, edited_cm, detail_json, image,
+                closeup)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     analysis_id,
@@ -925,6 +932,7 @@ def save_video_test(
                     d.edited_cm,
                     json.dumps(d.detail),
                     d.image,
+                    d.closeup,
                 )
                 for d in video_drops
             ],
@@ -937,7 +945,7 @@ def list_video_analyses(conn: sqlite3.Connection) -> dict[int, VideoAnalysis]:
     drops: dict[int, list[VideoDropInfo]] = {}
     for r in conn.execute(
         """SELECT id, analysis_id, seq, ball_no, rebound_cm, kept, edited_cm, detail_json,
-                  image IS NOT NULL AS has_image
+                  image IS NOT NULL AS has_image, closeup IS NOT NULL AS has_closeup
            FROM bounce_video_drops ORDER BY analysis_id, seq"""
     ):
         detail = json.loads(r["detail_json"])
@@ -951,6 +959,7 @@ def list_video_analyses(conn: sqlite3.Connection) -> dict[int, VideoAnalysis]:
                 r["edited_cm"],
                 bool(r["has_image"]),
                 tuple(detail.get("warnings", ())),
+                bool(r["has_closeup"]),
             )
         )
     return {
@@ -967,9 +976,13 @@ def list_video_analyses(conn: sqlite3.Connection) -> dict[int, VideoAnalysis]:
     }
 
 
-def video_drop_image(conn: sqlite3.Connection, drop_id: int) -> bytes | None:
-    row = conn.execute("SELECT image FROM bounce_video_drops WHERE id = ?", (drop_id,)).fetchone()
-    return None if row is None else row["image"]
+def video_drop_image(conn: sqlite3.Connection, drop_id: int, closeup: bool = False) -> bytes | None:
+    """A drop's picture, or with ``closeup`` its apex close-up; None if there is none."""
+    column = "closeup" if closeup else "image"
+    row = conn.execute(
+        f"SELECT {column} FROM bounce_video_drops WHERE id = ?", (drop_id,)
+    ).fetchone()
+    return None if row is None else row[column]
 
 
 @dataclass(frozen=True)

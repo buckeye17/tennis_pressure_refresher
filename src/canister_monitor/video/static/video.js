@@ -459,9 +459,11 @@
       const rowClass = [d.kept ? null : "rejected", d.outlier_z != null ? "outlier" : null,
         i && d.ball_no !== rev.drops[i - 1].ball_no ? "newball" : null].filter(Boolean).join(" ") || null;
       return el("tr", { class: rowClass },
-        el("td", {}, d.image
+        el("td", {}, el("div", { class: "pictures" }, d.image
           ? el("img", { src: `/api/drops/${d.seq}.jpg?s=${st.session}`, alt: `Drop ${d.seq + 1}`, loading: "lazy", onclick: (e) => showPicture(e.target.src) })
-          : el("span", { class: "muted small" }, "no picture")),
+          : el("span", { class: "muted small" }, "no picture"), d.closeup
+          ? el("img", { class: "closeup", src: `/api/drops/${d.seq}/closeup.jpg?s=${st.session}`, alt: `Drop ${d.seq + 1}: the ball at its apex, full resolution`, title: "The ball at its apex, full resolution. The green line is where the measurement put the bottom of the ball.", loading: "lazy", onclick: (e) => showPicture(e.target.src, true) })
+          : null)),
         el("td", {}, el("select", { "aria-label": "Ball", "data-focus": `b${d.seq}`, onchange: (e) => edit(d.seq, { ball_no: +e.target.value }) }, ...ballOptions(d.ball_no))),
         el("td", { class: "num" }, fmt(d.measured_cm)),
         el("td", { class: "height" }, height, d.edited_cm != null
@@ -588,8 +590,9 @@
     });
   }
 
-  function showPicture(src) {
+  function showPicture(src, closeup = false) {
     $("#picture-img").src = src;
+    $("#picture-img").classList.toggle("closeup", closeup);
     $("#picture").showModal();
   }
 

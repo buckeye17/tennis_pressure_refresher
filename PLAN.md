@@ -350,7 +350,8 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
   - Timestamps come from the capture clock, so a dropped frame doesn't distort the fits.
   - The session is also recorded to `recordings/<time>.mp4` (git-ignored), with each frame's capture time in `<time>.times.txt`, so it can be re-analysed as a clip with its true timing. Expect about 100 MB for 3 minutes at 720p.
 - **3b. Clip.** The clip is uploaded to the local server, kept in `recordings/`, and analysed with a progress bar, usually in seconds.
-- **4. Review**, on the laptop: one row per drop with its picture and any warnings.
+- **4. Review**, on the laptop: one row per drop with its picture, an apex close-up and any warnings.
+  - The close-up is the ball at full resolution in the frame nearest its apex, enlarged, with a green line where the measurement put the bottom of the ball. The drop picture is shrunk to 640 rows, too small to judge a pixel or two at the apex. The analysis keeps a square about three ball widths across around the ball in each buffered frame, rather than whole full-size frames.
   - Each drop can be moved to another ball, rejected, or its height typed over (it is then marked as edited).
   - Per-ball medians update as you go.
   - **Save to Pi** creates the bounce test, `source = video`, with the analysis details and pictures, in one request. The room temperature is pre-filled from the batch's canister sensor (else any fresh one), as on the dashboard, and a note can be added.
@@ -438,14 +439,15 @@ CREATE TABLE bounce_video_drops (
     kept         INTEGER NOT NULL,       -- 0: rejected in review (kept for the record)
     edited_cm    REAL,                   -- the height typed over it in review, if any
     detail_json  TEXT NOT NULL,          -- release/floor/apex rows, frame times, fit residuals, warnings
-    image        BLOB                    -- JPEG of the drop with its lines drawn, ~20 KB
+    image        BLOB,                   -- JPEG of the drop with its lines drawn, ~20 KB
+    closeup      BLOB                    -- migration 5: JPEG of the ball at its apex, full resolution, ~10 KB
 );
 
 ALTER TABLE bounce_tests ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';  -- manual | video
 ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark between floor and drop height
 ```
 
-`filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures. A video test edited on the dashboard keeps its analysis and pictures as the record of what was measured.
+`filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures, each with its apex close-up. A video test edited on the dashboard keeps its analysis and pictures as the record of what was measured.
 
 **Install** (laptop only): the `video` extra, with `uv sync --all-extras` (dev tools too), then `uv run ball-bounce-tracker`; or `uv run --extra video ball-bounce-tracker` on its own. This adds OpenCV and NumPy and the `ball-bounce-tracker` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
 
@@ -937,6 +939,7 @@ Next, in order. Data collection comes first because it takes the longest:
      - `GET /api/bounce/video-drops/<id>.jpg` serves a picture. `GET /api/bounce` gives each test its `source` and, for video tests, `video` (file, calibration, every drop with its warnings).
      - `PATCH /api/bounce/setups/<id>` sets only `mid_mark_cm`: the drop height and surface define tests already taken, the mark doesn't. The dashboard has a mid mark box in the setup form and a Mid mark button on each setup.
      - Dashboard: a "video" tag on the stage, and Pictures on the row, which opens a row of the drops in order (rejected ones dimmed, typed-over ones tagged, warnings on hover; click for full size).
+     - Later, migration 5: `bounce_video_drops.closeup`, sent as each drop's `closeup_jpeg` (same limits as `image_jpeg`) and served from `GET /api/bounce/video-drops/<id>/closeup.jpg`. Tests saved before it have no close-ups.
   5. *(done)* Save to Pi from the app, keeping the session locally to send later if the Pi is offline; README section.
 
      As built: `video/pi.py` posts with `urllib` (30 s timeout) and keeps the Pi's status and reason in `PiError`. `video/outbox.py` keeps unsent tests. App routes: `POST /api/save`, `GET /api/outbox`, `POST /api/outbox/send` (stops at the first that can't reach the Pi), `GET /api/pi/temps`. Session state carries `saved` (saved or queued, the test id, and the review version saved), so the page says when the review changed since saving. Tests: the Pi's endpoint in `tests/test_bounce.py` (save, save again in place, pictures, CSV, 16 kinds of bad request); in `tests/test_video_app.py` a clip's review through the Pi's real endpoint (kept while the Pi is away, sent later, saved again after edits and after Analyse again, refused once its batch is deleted), and `PiClient` over real HTTP. Checked in the browser with the demo camera against a scratch dashboard: save, the changed-since warning, the Pi stopped, Send now, and the pictures on the dashboard.

@@ -117,7 +117,8 @@ def _rebound(value: object, name: str, drop_cm: float) -> float:
 
 def _video_json(v: db.VideoAnalysis | None) -> dict | None:
     """What the dashboard shows of a video test: the file, how it was calibrated, and
-    every drop found (pictures from ``/api/bounce/video-drops/<id>.jpg``)."""
+    every drop found (pictures from ``/api/bounce/video-drops/<id>.jpg``, apex close-ups
+    from ``/api/bounce/video-drops/<id>/closeup.jpg``)."""
     if v is None:
         return None
     cal = v.video.get("calibration")
@@ -133,6 +134,7 @@ def _video_json(v: db.VideoAnalysis | None) -> dict | None:
                 "kept": d.kept,
                 "edited_cm": d.edited_cm,
                 "image": d.has_image,
+                "closeup": d.has_closeup,
                 "warnings": list(d.warnings),
             }
             for d in v.drops
@@ -421,6 +423,7 @@ VIDEO_DROP_FIELDS = {
     "outlier_z",
     "detail",
     "image_jpeg",
+    "closeup_jpeg",
 }
 
 
@@ -467,6 +470,7 @@ def _video_drop(d: object, i: int, n_balls: int, drop_cm: float) -> db.VideoDrop
         edited_cm=None if edited is None else _rebound(edited, f"{name} edited_cm", drop_cm),
         detail=_json_object(d.get("detail", {}), f"{name} detail"),
         image=_jpeg(d.get("image_jpeg"), f"{name} image_jpeg"),
+        closeup=_jpeg(d.get("closeup_jpeg"), f"{name} closeup_jpeg"),
     )
 
 
@@ -542,10 +546,12 @@ def save_video_test():
 
 
 @bounce_api.get("/api/bounce/video-drops/<int:drop_id>.jpg")
-def video_drop_image(drop_id: int):
-    jpeg = db.video_drop_image(get_db(), drop_id)
+@bounce_api.get("/api/bounce/video-drops/<int:drop_id>/closeup.jpg", defaults={"closeup": True})
+def video_drop_image(drop_id: int, closeup: bool = False):
+    jpeg = db.video_drop_image(get_db(), drop_id, closeup)
     if jpeg is None:
-        raise ApiError(f"no picture for video drop {drop_id}", 404)
+        what = "apex close-up" if closeup else "picture"
+        raise ApiError(f"no {what} for video drop {drop_id}", 404)
     # A drop's picture never changes: saving a review again makes new drop ids.
     return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 

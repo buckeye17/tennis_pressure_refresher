@@ -25,6 +25,7 @@ from canister_monitor.video.measure import (
 TOOL = f"ball-bounce-tracker {__version__}"
 BUFFER_S = 1.2  # recent frames kept for drop pictures (a drop ends <~0.6 s after its apex)
 PREVIEW_ROWS = 640  # buffered frames are shrunk to this height
+CLOSEUP_PX = 280  # apex close-ups are enlarged to about this size, at least 2x
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,8 @@ class Buffered:
     small: np.ndarray  # whole frame at PREVIEW_ROWS high
     scale: float
     obs: Observation | None
+    crop: np.ndarray | None = None  # full resolution, around the ball
+    crop_at: tuple[int, int] = (0, 0)  # the crop's top-left, px of the full frame
 
 
 @dataclass
@@ -107,6 +110,7 @@ class Result:
     calibration: object | None = None
     entries: list[tuple[int, Drop]] = field(default_factory=list)
     images: dict[int, np.ndarray] = field(default_factory=dict)  # drop seq -> picture
+    closeups: dict[int, np.ndarray] = field(default_factory=dict)  # drop seq -> ball at apex
 
     def to_json(self) -> dict:
         cal = self.calibration
@@ -185,7 +189,8 @@ class Analyzer:
             self.trace.append((t, obs))
         scale = min(1.0, PREVIEW_ROWS / frame.shape[0])
         small = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        self._buffer.append(Buffered(t, small, scale, obs))
+        crop, crop_at = ball_crop(frame, obs)
+        self._buffer.append(Buffered(t, small, scale, obs, crop, crop_at))
         while t - self._buffer[0].t > BUFFER_S:
             self._buffer.popleft()
         return self._handle(self.measurer.feed(t, obs))
@@ -204,6 +209,9 @@ class Analyzer:
                 image = self.drop_image(e.drop, ball)
                 if image is not None:
                     self.result.images[e.drop.seq] = image
+                closeup = self.drop_closeup(e.drop, ball)
+                if closeup is not None:
+                    self.result.closeups[e.drop.seq] = closeup
             elif isinstance(e, RefinedEvent):
                 self.result.calibration = e.calibration
                 by_seq = {d.seq: d for d in e.drops}
@@ -216,6 +224,7 @@ class Analyzer:
         self.result.entries = list(self.session.entries)
         if undone is not None:
             self.result.images.pop(undone[1].seq, None)
+            self.result.closeups.pop(undone[1].seq, None)
             self.measurer.discard(undone[1].seq)
         return undone
 
@@ -264,6 +273,37 @@ class Analyzer:
             cv2.LINE_AA,
         )
         return crop if crop.size else None
+
+    def drop_closeup(self, drop: Drop, ball: int) -> np.ndarray | None:
+        """The ball at its apex at full resolution, enlarged, with the measured apex
+        row drawn: to check the measurement found the ball's bottom edge."""
+        near = [b for b in self._buffer if b.crop is not None and abs(b.t - drop.t_apex) < 0.1]
+        if not near:
+            return None
+        b = min(near, key=lambda x: abs(x.t - drop.t_apex))
+        k = max(2, round(CLOSEUP_PX / max(b.crop.shape[:2])))  # the line falls between pixels
+        img = cv2.resize(b.crop, None, fx=k, fy=k, interpolation=cv2.INTER_NEAREST)
+        x0, y0 = b.crop_at
+        y = int(round((drop.apex_row - y0) * k))
+        if 0 <= y < img.shape[0]:
+            cv2.line(img, (0, y), (img.shape[1], y), (60, 220, 60), 1)
+        for colour, weight in (((0, 0, 0), 3), ((255, 255, 255), 1)):  # outlined, to read anywhere
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            cv2.putText(img, f"ball {ball} apex", (5, 17), font, 0.5, colour, weight, cv2.LINE_AA)
+        return img
+
+
+def ball_crop(
+    frame: np.ndarray, obs: Observation | None
+) -> tuple[np.ndarray | None, tuple[int, int]]:
+    """A full-resolution square around the ball, about three ball widths across."""
+    if obs is None:
+        return None, (0, 0)
+    h, w = frame.shape[:2]
+    side = int(min(max(3 * max(obs.width, obs.height), 80), 400, h, w))
+    x0 = int(min(max(obs.cx - side / 2, 0), w - side))
+    y0 = int(min(max(obs.cy - side / 2, 0), h - side))
+    return frame[y0 : y0 + side, x0 : x0 + side].copy(), (x0, y0)
 
 
 def analyze_clip(

@@ -147,7 +147,7 @@ class Review:
         self.key = key or uuid.uuid4().hex
         self.drops = [ReviewDrop(d.seq, ball, d.rebound_cm) for ball, d in analyzer.result.entries]
         self.version = 0
-        self._jpeg: dict[int, bytes] = {}
+        self._jpeg: dict[tuple[int, bool], bytes] = {}
 
     def edit(self, seq: int, changes: dict) -> None:
         """Apply ``ball_no``, ``kept`` and ``edited_cm`` (None clears it). Raises ValueError."""
@@ -205,13 +205,17 @@ class Review:
             "drops_fit": fit,  # a normal distribution of the kept drops, outliers left out
         }
 
-    def image(self, seq: int) -> bytes | None:
-        if seq not in self._jpeg:
-            img = self.analyzer.result.images.get(seq)
+    def image(self, seq: int, closeup: bool = False) -> bytes | None:
+        """A drop's picture as JPEG, or with ``closeup`` the ball at its apex."""
+        if (seq, closeup) not in self._jpeg:
+            r = self.analyzer.result
+            img = (r.closeups if closeup else r.images).get(seq)
             if img is None:
                 return None
-            self._jpeg[seq] = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes()
-        return self._jpeg[seq]
+            quality = 90 if closeup else 80
+            jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes()
+            self._jpeg[seq, closeup] = jpeg
+        return self._jpeg[seq, closeup]
 
     def to_json(self) -> dict:
         details = {d.seq: d for _, d in self.analyzer.result.entries}
@@ -227,6 +231,7 @@ class Review:
                     "method": details[d.seq].method,
                     "warnings": list(details[d.seq].warnings),
                     "image": d.seq in self.analyzer.result.images,
+                    "closeup": d.seq in self.analyzer.result.closeups,
                 }
                 for d in self.drops
             ],
@@ -272,13 +277,16 @@ class Review:
                     "edited_cm": d.edited_cm,
                     "outlier_z": outliers.get(d.seq),
                     "detail": {k: v for k, v in detail[d.seq].items() if k != "ball_no"},
-                    "image_jpeg": None
-                    if (img := self.image(d.seq)) is None
-                    else base64.b64encode(img).decode("ascii"),
+                    "image_jpeg": b64(self.image(d.seq)),
+                    "closeup_jpeg": b64(self.image(d.seq, closeup=True)),
                 }
                 for d in self.drops
             ],
         }
+
+
+def b64(data: bytes | None) -> str | None:
+    return None if data is None else base64.b64encode(data).decode("ascii")
 
 
 # --- the preview -------------------------------------------------------------------------

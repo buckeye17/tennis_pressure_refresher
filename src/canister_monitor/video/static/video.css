@@ -220,6 +220,8 @@ table.review tr.rejected td { opacity: 0.45; }
 table.review tr.rejected td.keep { opacity: 1; }
 table.review tr.newball td { border-top: 2px solid var(--border); }
 table.review img { height: 110px; display: block; border-radius: 6px; cursor: zoom-in; }
+table.review .pictures { display: flex; gap: 6px; }
+table.review img.closeup { width: 110px; object-fit: cover; image-rendering: pixelated; }
 table.review input[type="number"] { width: 6.5em; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
 table.review input.edited { border-color: var(--accent); }
 table.review td.height { width: 12em; white-space: nowrap; }
@@ -248,5 +250,6 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 .mark { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 2px #000; pointer-events: none; }
 #frame-t { width: 100%; }
 #picture-img { display: block; max-width: 100%; max-height: 75vh; }
+#picture-img.closeup { width: min(560px, 85vw); image-rendering: pixelated; }
 
 .foot { padding: 4px 16px 16px; }

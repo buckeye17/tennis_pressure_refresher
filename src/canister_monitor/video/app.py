@@ -299,11 +299,12 @@ def create_app(
         return state()
 
     @app.get("/api/drops/<int:seq>.jpg")
-    def drop_image(seq: int):
+    @app.get("/api/drops/<int:seq>/closeup.jpg", defaults={"closeup": True})
+    def drop_image(seq: int, closeup: bool = False):
         _, rev = review()
-        jpeg = rev.image(seq)
+        jpeg = rev.image(seq, closeup)
         if jpeg is None:
-            raise ApiError(f"no picture for drop {seq}", 404)
+            raise ApiError(f"no {'close-up' if closeup else 'picture'} for drop {seq}", 404)
         return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/review.json")

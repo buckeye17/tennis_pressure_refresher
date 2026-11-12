@@ -341,6 +341,16 @@ def test_clip_end_to_end(tmp_path, cam):
     for (_, d), t in zip(result.entries, truth.drops, strict=True):
         assert d.rebound_cm == pytest.approx(corrected(t), rel=0.005)
     assert set(result.images) == {0, 1, 2, 3}
+    assert set(result.closeups) == {0, 1, 2, 3}
+    for img in result.closeups.values():
+        # Enlarged, with the measured apex drawn along the bottom of the ball.
+        assert img.shape[0] == img.shape[1] >= pipeline.CLOSEUP_PX // 2
+        green = (img[:, :, 1] > 200) & (img[:, :, 0] < 90) & (img[:, :, 2] < 90)
+        line = int(np.argmax(green.mean(axis=1)))
+        assert green[line].mean() > 0.5
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        yellow = np.where(cv2.inRange(hsv, (22, 70, 80), (48, 255, 255)).any(axis=1))[0]
+        assert yellow.size and abs(int(yellow.max()) - line) <= 0.05 * img.shape[0]
 
 
 def test_live_path_with_dropped_frames_matches(tmp_path):

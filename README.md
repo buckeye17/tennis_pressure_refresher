@@ -107,10 +107,12 @@ the app fills it in.
 1. Pick the batch, setup and stage. Then pick a webcam, or drop in a phone clip.
 2. Start with three holds, the ball still on the floor, at the mid mark, then at the drop mark.
    Then drop each numbered ball in order and catch it after its first bounce.
-3. **Review** each drop's picture. Fix a height, move a drop to another ball, or untick Keep.
+3. **Review** each drop's picture. Beside it, a full-resolution close-up of the ball at its apex
+   has a green line where the measurement put the bottom of the ball. Fix a height, move a drop
+   to another ball, or untick Keep.
 4. Check the room temperature (pre-filled from the batch's canister sensor) and press
-   **Save to Pi**. The test appears on the dashboard tagged *video*, with each drop's picture under
-   **Pictures**. Saving again after more edits updates the same test.
+   **Save to Pi**. The test appears on the dashboard tagged *video*, with each drop's picture and
+   close-up under **Pictures**. Saving again after more edits updates the same test.
 
 If the Pi doesn't answer, the test is kept in `recordings/` and listed under **Waiting to be sent**.
 Press **Send now** when the Pi is back. Recordings of live sessions stay in `recordings/` too.

@@ -55,6 +55,8 @@
     busy: false,
     frameDuration: 0,
     pick: null,
+    tempSession: null, // the review whose room temperature was pre-filled
+    outbox: [],
   };
 
   // --- lengths --------------------------------------------------------------------
@@ -88,6 +90,19 @@
     ui.reviewKey = ui.liveKey = null; // re-render tables in the new units
     render();
   }
+
+  // --- temperatures (the API speaks degC) ---------------------------------------------
+
+  const tempUnit = () => prefs.tempUnit || (units() === "in" ? "F" : "C");
+  const toTemp = (c) => (tempUnit() === "F" ? c * 9 / 5 + 32 : c);
+  const fromTemp = (v) => (tempUnit() === "F" ? (v - 32) * 5 / 9 : v);
+  const setTempInput = (c) => {
+    $("#save-temp").value = c == null ? "" : toTemp(c).toFixed(tempUnit() === "F" ? 0 : 1);
+  };
+  const tempInputC = () => {
+    const v = parseFloat($("#save-temp").value);
+    return Number.isFinite(v) ? fromTemp(v) : null;
+  };
 
   // --- talking to the server -------------------------------------------------------
 
@@ -295,6 +310,8 @@
     renderPreview(st, running);
     if (running) renderLive(st);
     if (phase === "review") renderReview(st);
+    else ui.tempSession = null;
+    renderOutbox();
     if (phase === "error") {
       $("#error-text").textContent = st.error;
       $("#error-reanalyse").hidden = !st.file || !st.params || !st.duration_s; // not if unreadable
@@ -410,6 +427,7 @@
         : k ? `, leaving out ${k} outlier${k > 1 ? "s" : ""} (highlighted).` : "; no outliers.");
     }
     $("#review-fit").textContent = fitText;
+    renderSave(st);
 
     const key = `${st.session}|${rev.version}|${units()}`;
     if (key === ui.reviewKey) return;
@@ -458,6 +476,117 @@
   }
 
   const edit = (seq, changes) => act(() => api("POST", `/api/review/${seq}`, changes));
+
+  // --- saving to the Pi -----------------------------------------------------------------
+
+  const canSave = (st) => !!(st.params?.batch_id && st.params?.setup_id && st.params?.context);
+  const piUrl = () => document.documentElement.dataset.piUrl;
+  // Saved, and nothing changed since (Analyse again re-measures, so it counts as a change).
+  const savedCurrent = (st) => st.saved?.status === "saved" && st.saved.version === st.review?.version;
+
+  function renderSave(st) {
+    const ok = canSave(st);
+    $("#save-fields").hidden = !ok;
+    const button = $("#save-pi");
+    button.disabled = !ok || !st.review.drops.some((d) => d.kept);
+    button.textContent = st.saved?.status === "saved" ? "Save again" : "Save to Pi";
+    button.title = ok ? "" : "This session wasn't set up with a batch and setup from the Pi";
+    if (ok && ui.tempSession !== st.session) prefillTemp(st);
+
+    const box = $("#save-status");
+    const sv = st.saved;
+    let cls = "";
+    let parts = [];
+    if (!ok) {
+      cls = "muted";
+      parts = ["Set up without the Pi, so this test can't be saved there. Download the JSON to keep it."];
+    } else if (sv?.status === "saved") {
+      const what = `test #${sv.test_id}`;
+      if (savedCurrent(st)) {
+        cls = "ok";
+        parts = [`${sv.created ? "Saved to the Pi" : "Updated on the Pi"} as ${what}. `,
+          el("a", { href: piUrl(), target: "_blank", rel: "noopener" }, "Open the dashboard")];
+      } else {
+        cls = "warn";
+        parts = [`Changed since it was saved as ${what}: Save again to update it.`];
+      }
+    } else if (sv?.status === "queued") {
+      cls = "warn";
+      parts = [`The Pi didn't take it (${sv.error}). It's kept in recordings/${sv.file}: `
+        + "send it from Waiting to be sent when the Pi is back, or Save again."];
+    }
+    box.hidden = !parts.length;
+    box.className = `small ${cls}`;
+    box.replaceChildren(...parts);
+  }
+
+  /** The room temperature from the batch's canister sensor, else any fresh one. */
+  async function prefillTemp(st) {
+    ui.tempSession = st.session;
+    $("#save-temp-unit").value = tempUnit();
+    if ($("#save-temp").value !== "") return; // typed already (or kept from Analyse again)
+    const note = $("#save-temp-note");
+    note.textContent = "";
+    let temps = [];
+    try {
+      temps = (await api("GET", "/api/pi/temps")).temps;
+    } catch { /* leave it empty */ }
+    const mac = ui.pi?.batches?.find((b) => b.id === st.params.batch_id)?.mac;
+    const t = temps.find((x) => x.mac === mac) || temps[0];
+    if (!t || $("#save-temp").value !== "") return;
+    setTempInput(t.temp_c);
+    note.textContent = `From ${t.canister || t.mac}'s sensor. Change it if you tested elsewhere.`;
+  }
+
+  function save() {
+    const st = ui.state;
+    const tempText = $("#save-temp").value.trim();
+    const temp = tempInputC();
+    if (tempText !== "" && (temp == null || temp < -30 || temp > 60)) {
+      alert("The room temperature doesn't look right. Clear it if you don't know it.");
+      return;
+    }
+    if (tempText === "" && !confirm("No room temperature: rebound depends on it. Save anyway?")) return;
+    const outliers = st.review.drops.filter((d) => d.kept && d.outlier_z != null).length;
+    if (outliers && !confirm(`${outliers} kept drop${outliers > 1 ? "s don't" : " doesn't"} fit the others (highlighted). Save anyway?`)) return;
+    act(async () => {
+      const next = await api("POST", "/api/save", { temp_c: tempText === "" ? null : temp, note: $("#save-note").value });
+      loadOutbox();
+      return next;
+    });
+  }
+
+  // --- tests waiting to be sent ------------------------------------------------------------
+
+  async function loadOutbox() {
+    try {
+      ui.outbox = (await api("GET", "/api/outbox")).items;
+    } catch { return; }
+    renderOutbox();
+  }
+
+  function renderOutbox() {
+    const items = ui.outbox;
+    $("#outbox-card").hidden = !items.length || !["idle", "review"].includes(ui.state.phase);
+    $("#outbox-list").replaceChildren(...items.map((it) => el("li", {},
+      `${it.batch || "Batch ?"} · ${CONTEXT_LABELS[it.context] || it.context || ""}`,
+      el("span", { class: "muted" }, `${it.ts ? new Date(it.ts * 1000).toLocaleString() : ""} · ${it.drops} drops · ${it.file}`))));
+  }
+
+  async function sendOutbox() {
+    const err = $("#outbox-error");
+    err.hidden = true;
+    await act(async () => {
+      const res = await api("POST", "/api/outbox/send");
+      ui.outbox = res.items;
+      if (res.failed.length) {
+        err.textContent = res.failed.map((f) => `${f.file}: ${f.error}`).join(" · ");
+        err.hidden = false;
+      }
+      renderOutbox();
+      return api("GET", "/api/state");
+    });
+  }
 
   function showPicture(src) {
     $("#picture-img").src = src;
@@ -674,9 +803,25 @@
     });
 
     $("#new-session").addEventListener("click", () => {
-      if (!confirm("Start a new session? This review hasn't been saved (the video stays in recordings/).")) return;
+      const st = ui.state;
+      const queued = st.saved?.status === "queued" && st.saved.version === st.review?.version;
+      const question = savedCurrent(st) ? "Start a new session?"
+        : queued ? "Start a new session? This test is waiting to be sent to the Pi."
+          : st.saved ? "Start a new session? Your changes since saving aren't on the Pi."
+            : "Start a new session? This review hasn't been saved (the video stays in recordings/).";
+      if (!confirm(question)) return;
+      $("#save-temp").value = "";
+      $("#save-note").value = "";
       act(() => api("POST", "/api/close"));
     });
+    $("#save-pi").addEventListener("click", save);
+    $("#save-temp-unit").addEventListener("change", (e) => {
+      const c = tempInputC();
+      prefs.tempUnit = e.target.value;
+      savePrefs();
+      setTempInput(c);
+    });
+    $("#outbox-send").addEventListener("click", sendOutbox);
     $("#error-back").addEventListener("click", () => act(() => api("POST", "/api/close")));
     $("#reanalyse-open").addEventListener("click", openReanalyse);
     $("#error-reanalyse").addEventListener("click", openReanalyse);
@@ -716,5 +861,6 @@
   if (ui.units) setUnits(ui.units);
   loadPi();
   loadCameras();
+  loadOutbox();
   poll();
 })();

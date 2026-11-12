@@ -18,6 +18,7 @@ import logging
 import queue
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import asdict, dataclass, replace
@@ -138,9 +139,12 @@ class ReviewDrop:
 class Review:
     """The drops of a finished session, as the user corrects them."""
 
-    def __init__(self, analyzer: Analyzer, params: Params) -> None:
+    def __init__(self, analyzer: Analyzer, params: Params, key: str | None = None) -> None:
         self.analyzer = analyzer
         self.params = params
+        # Names this review on the Pi: saving it again replaces the test it made. Kept
+        # across Analyse again, which re-measures the same session.
+        self.key = key or uuid.uuid4().hex
         self.drops = [ReviewDrop(d.seq, ball, d.rebound_cm) for ball, d in analyzer.result.entries]
         self.version = 0
         self._jpeg: dict[int, bytes] = {}
@@ -237,6 +241,7 @@ class Review:
         detail = {d["seq"]: d for d in result["drops"]}
         outliers = self.outliers()
         return {
+            "key": self.key,
             "tool": TOOL,
             "test": {
                 "ts": ts,
@@ -401,9 +406,11 @@ class Run:
 
     kind = ""
 
-    def __init__(self, run_id: int, recordings: Path) -> None:
+    def __init__(self, run_id: int, recordings: Path, save_key: str | None = None) -> None:
         self.id = run_id
         self.recordings = recordings
+        self.save_key = save_key  # the review's key on the Pi (Review.key)
+        self.saved: dict | None = None  # the last Save to Pi: sent, or kept to send later
         self.phase = "starting"
         self.error: str | None = None
         self.notice: str | None = None
@@ -469,6 +476,7 @@ class Run:
             "ball_seen": self._obs is not None,
             "color_picked": self.detector.color != ColorRange(),
             "area": None if self.detector.area is None else [list(p) for p in self.detector.area],
+            "saved": self.saved,
         }
         if self.analyzer is not None and self.phase != "review":
             out.update(self._progress())
@@ -578,7 +586,8 @@ class Run:
     def _to_review(self) -> None:
         assert self.analyzer is not None and self.params is not None
         self.analyzer.finish()
-        self.review = Review(self.analyzer, self.params)
+        self.review = Review(self.analyzer, self.params, self.save_key)
+        self.save_key = self.review.key
         self.phase = "review"
 
     def _fail(self, message: str) -> None:
@@ -834,8 +843,9 @@ class ClipRun(Run):
         params: Params,
         color: ColorRange | None = None,
         area: Area | None = None,
+        save_key: str | None = None,
     ) -> None:
-        super().__init__(run_id, recordings)
+        super().__init__(run_id, recordings, save_key)
         self.file = path
         self.params = params
         self.phase = "analysing"
@@ -917,8 +927,11 @@ class Controller:
         params: Params,
         color: ColorRange | None = None,
         area: Area | None = None,
+        save_key: str | None = None,
     ) -> Run:
-        return self._replace(lambda i: ClipRun(i, self.recordings, path, params, color, area))
+        return self._replace(
+            lambda i: ClipRun(i, self.recordings, path, params, color, area, save_key)
+        )
 
     def reanalyse(self, pick: dict | None, area: object = KEEP) -> Run:
         """Analyse the current session's clip or recording again, optionally with the
@@ -940,7 +953,11 @@ class Controller:
                 color = ColorRange.around(sample_color(frame, pick["x"] * w, pick["y"] * h))
             if area is KEEP:
                 region = run.detector.area
-            return self.clip(run.file, run.params, color, region)
+            saved = run.saved
+            new = self.clip(run.file, run.params, color, region, run.save_key)
+            if saved is not None:  # the same test on the Pi, but its drops are measured anew
+                new.saved = {**saved, "version": None}
+            return new
 
     def current(self, session: int | None = None) -> Run:
         run = self.run

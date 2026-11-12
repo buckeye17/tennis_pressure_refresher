@@ -124,15 +124,37 @@
         </table>
         <p id="review-mean" class="mean"></p>
         <p id="review-fit" class="small muted"></p>
+        <div id="save-fields">
+          <label for="save-temp">Room temperature</label>
+          <div class="with-select">
+            <input id="save-temp" type="number" step="0.1" inputmode="decimal">
+            <select id="save-temp-unit" aria-label="Temperature units">
+              <option value="F">°F</option>
+              <option value="C">°C</option>
+            </select>
+          </div>
+          <p id="save-temp-note" class="muted small"></p>
+          <label>Note (optional)
+            <input id="save-note" maxlength="1000">
+          </label>
+        </div>
         <div class="actions column">
-          <button id="save-pi" class="primary" type="button" disabled
-            title="Saving to the Pi comes in a later step">Save to Pi</button>
+          <button id="save-pi" class="primary" type="button">Save to Pi</button>
           <a id="download" class="button" href="/api/review.json" download>Download JSON</a>
           <button id="reanalyse-open" type="button">Analyse again…</button>
           <button id="new-session" type="button">New session</button>
         </div>
-        <p class="muted small">Saving to the Pi comes in a later step; download the review as
-          JSON meanwhile.</p>
+        <p id="save-status" class="small" hidden></p>
+      </section>
+
+      <section id="outbox-card" class="card" hidden>
+        <h2>Waiting to be sent</h2>
+        <p class="muted small">Tests the Pi couldn't take when you saved them. They're kept in
+          recordings/ until it does.</p>
+        <ul id="outbox-list" class="outbox"></ul>
+        <p id="outbox-error" class="error small" hidden></p>
+        <div class="actions"><button id="outbox-send" class="primary" type="button">Send
+            now</button></div>
       </section>
 
       <section id="error-card" class="card" hidden>

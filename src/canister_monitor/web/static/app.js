@@ -37,6 +37,7 @@
     bounce: {
       settings: null, setups: [], batches: [], references: [], conversions: [],
       expanded: new Set(), showRetired: false,
+      pictures: new Set(), // video tests whose drop pictures are shown
     },
   };
 
@@ -649,9 +650,11 @@
       el("table", { class: "readings" },
         el("thead", {}, el("tr", {},
           ...heads.map((h, i) => el("th", { scope: "col", class: i >= 3 && i <= 6 ? "num" : null }, h)))),
-        el("tbody", {}, ...[...b.tests].reverse().map((t) => el("tr", {},
+        el("tbody", {}, ...[...b.tests].reverse().flatMap((t) => [el("tr", {},
           el("td", { class: "when" }, fmtDateTime(t.ts)),
-          el("td", {}, CONTEXT_SHORT[t.context] || t.context),
+          el("td", {}, CONTEXT_SHORT[t.context] || t.context, t.source === "video"
+            ? el("span", { class: "tag video-tag", title: t.video ? `Measured from video: ${t.video.filename}` : "Measured from video" }, "video")
+            : null),
           el("td", {}, setupById(t.setup_id)?.name ?? "?"),
           el("td", { class: "num" }, t.temp_c == null ? "—" : toTemp(t.temp_c).toFixed(tDigits)),
           el("td", { class: "num" }, t.summary.mean_cm == null ? "—" : toLen(t.summary.mean_cm).toFixed(1)),
@@ -664,11 +667,48 @@
             }, " ⚠")] : [];
           })()),
           el("td", { class: "row-actions" },
+            t.video?.drops.some((d) => d.image)
+              ? el("button", {
+                type: "button", class: "link", "aria-expanded": String(state.bounce.pictures.has(t.id)),
+                onclick: () => togglePictures(t.id),
+              }, state.bounce.pictures.has(t.id) ? "Hide pictures" : "Pictures")
+              : null,
             el("button", { type: "button", class: "link", onclick: () => openTest(b, t) }, "Edit"),
             el("button", {
               type: "button", class: "del", title: "Delete test", "aria-label": "Delete test",
               onclick: () => removeItem(`/api/bounce/tests/${t.id}`, `Delete the ${CONTEXT_SHORT[t.context] || t.context} test from ${fmtDateTime(t.ts)}?`),
-            }, "✕")))))));
+            }, "✕"))),
+        state.bounce.pictures.has(t.id) && t.video ? picturesRow(t, heads.length) : null,
+        ].filter(Boolean)))));
+  }
+
+  /** A video test's drops as pictures, in the order they were dropped; rejected ones dimmed. */
+  function picturesRow(t, columns) {
+    const seen = new Map();
+    const figures = t.video.drops.map((d) => {
+      const n = (seen.get(d.ball_no) || 0) + 1;
+      seen.set(d.ball_no, n);
+      const height = d.edited_cm ?? d.rebound_cm;
+      const src = `/api/bounce/video-drops/${d.id}.jpg`;
+      return el("figure", { class: `drop-pic${d.kept ? "" : " rejected"}`, title: d.warnings.join("\n") || null },
+        d.image
+          ? el("a", { href: src, target: "_blank", rel: "noopener" },
+            el("img", { src, alt: `Ball ${d.ball_no}, drop ${n}`, loading: "lazy" }))
+          : el("div", { class: "no-pic" }, "no picture"),
+        el("figcaption", {}, `Ball ${d.ball_no}.${n} · ${height == null ? "—" : fmtLen(height)}`,
+          d.edited_cm != null ? el("span", { class: "tag" }, "edited") : null,
+          d.kept ? null : el("span", { class: "tag" }, "rejected"),
+          d.warnings.length ? el("span", { class: "flag", "aria-label": d.warnings.join("; ") }, " ⚠") : null));
+    });
+    const cal = t.video.calibration ? `calibrated (${t.video.calibration})` : "not calibrated";
+    return el("tr", { class: "pictures-row" }, el("td", { colspan: columns },
+      el("div", { class: "sub" }, `${t.video.filename} · ${cal}`),
+      el("div", { class: "drop-pics" }, ...figures)));
+  }
+
+  function togglePictures(id) {
+    if (!state.bounce.pictures.delete(id)) state.bounce.pictures.add(id);
+    renderBatches();
   }
 
   function toggleTests(id) {
@@ -693,10 +733,14 @@
     const list = $("#setups");
     list.replaceChildren(...state.bounce.setups.map((s) => el("li", {},
       el("span", {}, el("strong", {}, s.name), ` · drops from ${fmtLen(s.drop_cm)}`,
+        s.mid_mark_cm != null ? ` · mid mark ${fmtLen(s.mid_mark_cm)}` : "",
         s.is_itf ? " · ITF method" : "", s.note ? ` · ${s.note}` : ""),
-      s.used
-        ? el("span", { class: "muted small" }, "in use")
-        : delButton("Delete setup", () => removeItem(`/api/bounce/setups/${s.id}`, `Delete the setup "${s.name}"?`)))));
+      el("span", {},
+        el("button", { type: "button", class: "link", onclick: () => editMidMark(s) },
+          s.mid_mark_cm != null ? "Mid mark" : "Add mid mark"),
+        s.used
+          ? el("span", { class: "muted small" }, "in use")
+          : delButton("Delete setup", () => removeItem(`/api/bounce/setups/${s.id}`, `Delete the setup "${s.name}"?`))))));
     if (!state.bounce.setups.length) list.append(el("li", { class: "none" }, "No setups yet."));
     setupOptions($("#ref-setup"));
     const nonItf = setupOptions($("#conv-setup"), (s) => !s.is_itf);
@@ -777,13 +821,37 @@
     return fromLen(v);
   }
 
+  /** The mid mark is a hint for the video app; changing it doesn't touch tests already taken. */
+  async function editMidMark(s) {
+    const current = s.mid_mark_cm == null ? "" : toLen(s.mid_mark_cm).toFixed(1);
+    const typed = prompt(`Mid mark for "${s.name}" in ${state.lengthUnit}: the height of the second mark ` +
+      `on the wall, near typical rebounds. Leave empty to remove it.`, current);
+    if (typed == null) return;
+    $("#balls-error").textContent = "";
+    try {
+      const v = typed.trim() === "" ? null : parseNum(typed);
+      if (v != null && !(v > 0 && fromLen(v) < s.drop_cm)) {
+        throw new Error(`The mid mark must be between the floor and the drop height (${fmtLen(s.drop_cm)})`);
+      }
+      await send(`/api/bounce/setups/${s.id}`, "PATCH", { mid_mark_cm: v == null ? null : fromLen(v) });
+      await refreshBounce();
+    } catch (e) {
+      $("#balls-error").textContent = `Could not set the mid mark: ${e.message}`;
+    }
+  }
+
   function addSetup(e) {
     return submitForm(e, "#setup-error", async () => {
+      const drop = lengthField("#setup-drop", "Drop height");
+      const midText = $("#setup-mid").value.trim();
+      const mid = midText === "" ? null : lengthField("#setup-mid", "Mid mark", drop);
+      if (mid != null && mid >= drop) throw new Error("The mid mark must be below the drop height");
       await send("/api/bounce/setups", "POST", {
         name: $("#setup-name").value,
-        drop_cm: lengthField("#setup-drop", "Drop height"),
+        drop_cm: drop,
         is_itf: $("#setup-itf").checked,
         note: $("#setup-note").value.trim() || null,
+        mid_mark_cm: mid,
       });
       e.target.reset();
       $("#setup-drop").readOnly = false;

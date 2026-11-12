@@ -353,8 +353,10 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 - **4. Review**, on the laptop: one row per drop with its picture and any warnings.
   - Each drop can be moved to another ball, rejected, or its height typed over (it is then marked as edited).
   - Per-ball medians update as you go.
-  - **Save to Pi** creates the bounce test, `source = video`, with the analysis details and pictures, in one request.
-  - If the Pi can't be reached, the session is kept in `recordings/<time>.json` and can be sent from the app later.
+  - **Save to Pi** creates the bounce test, `source = video`, with the analysis details and pictures, in one request. The room temperature is pre-filled from the batch's canister sensor (else any fresh one), as on the dashboard, and a note can be added.
+  - Each review has a key, kept through Analyse again. Saving again, after more edits or after a reply was lost, replaces that test on the Pi instead of adding a second one.
+  - If the Pi can't be reached (or fails itself), the test is kept in `recordings/<video name>.unsent.json` and listed under **Waiting to be sent**, with **Send now**. Once sent it's renamed `.sent.json`. A test the Pi refuses (a 4xx, e.g. the batch was deleted) isn't kept: the app shows why.
+  - Only a session set up with a batch and setup from the Pi can be saved. One measured with the Pi away at set-up can still be downloaded as JSON.
 - The **command line** stays for scripting and debugging: `ball-bounce-tracker CLIP --drop-height 72in --mid-mark 36in --dry-run [--json] [--debug DIR]`.
 
 **Finding the ball** (`video/detect.py`).
@@ -421,6 +423,7 @@ To be confirmed on real clips (§13).
 CREATE TABLE bounce_video_analyses (
     id           INTEGER PRIMARY KEY,
     test_id      INTEGER NOT NULL UNIQUE REFERENCES bounce_tests(id) ON DELETE CASCADE,
+    save_key     TEXT UNIQUE,            -- the laptop review's key: saving it again replaces
     filename     TEXT NOT NULL,
     video_json   TEXT NOT NULL,          -- source, frames, fps, size, duration, calibration
     params_json  TEXT NOT NULL           -- tool version, colour range, thresholds
@@ -442,7 +445,7 @@ ALTER TABLE bounce_tests ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';  -- m
 ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark between floor and drop height
 ```
 
-`filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures.
+`filename` is the clip, or the saved recording for a live session. The test's drops (`bounce_drops`) are the kept drops at their reviewed heights, so everything built on tests treats video and manual tests alike. The dashboard marks video tests and shows their drop pictures. A video test edited on the dashboard keeps its analysis and pictures as the record of what was measured.
 
 **Install** (laptop only): the `video` extra, with `uv sync --all-extras` (dev tools too), then `uv run ball-bounce-tracker`; or `uv run --extra video ball-bounce-tracker` on its own. This adds OpenCV and NumPy and the `ball-bounce-tracker` command. The app reuses Flask, which is already a dependency. Calls to the Pi use `urllib` from the standard library.
 
@@ -923,11 +926,20 @@ Next, in order. Data collection comes first because it takes the longest:
      - Checks on that session: the background moved under 0.15 px in 12 minutes; the fall speeds imply a 200 cm drop; the curvature near the apex is ~8% above g, which with the mid mark ~10 cm below the apexes means up to ~1 cm at the apex. Open: the third drop of each ball read ~2 cm higher than the first on 8 of 9 balls, with the same release height and impact speed.
      - Also check: real recording sizes (the ~100 MB per 3 minutes estimate), and whether re-analysed recordings stay within 0.5%.
      - One random synthetic setup (−4° tilt, 60 fps, 720p landscape) reaches 0.60%, with or without the step 2 changes. Look at it here too.
-  4. Pi side:
+  4. *(done)* Pi side:
      - migration for the video tables, `bounce_tests.source` and `bounce_setups.mid_mark_cm` (editable in the setup form);
      - an API endpoint that accepts a reviewed video test (the test, analysis details and pictures) in one request, and one that serves drop pictures;
      - dashboard: video tests marked, pictures in the tests table, `source` in the CSV.
-  5. Save to Pi from the app, keeping the session locally to send later if the Pi is offline; README section.
+
+     As built:
+     - Migration 4 also adds `bounce_video_analyses.save_key`.
+     - `POST /api/bounce/video-tests` takes the review's export plus `key`. The test's drops are derived from the kept video drops at their reviewed heights; a `test.drops` sent with it must match them, which catches a stale export. A kept drop must be on a ball of the batch and no higher than the drop; a rejected one may sit on a ball past the batch (a stray catch). Pictures are base64 JPEGs of up to 512 KB each, the request up to 40 MB. 201 for a new test, 200 when the key replaced one.
+     - `GET /api/bounce/video-drops/<id>.jpg` serves a picture. `GET /api/bounce` gives each test its `source` and, for video tests, `video` (file, calibration, every drop with its warnings).
+     - `PATCH /api/bounce/setups/<id>` sets only `mid_mark_cm`: the drop height and surface define tests already taken, the mark doesn't. The dashboard has a mid mark box in the setup form and a Mid mark button on each setup.
+     - Dashboard: a "video" tag on the stage, and Pictures on the row, which opens a row of the drops in order (rejected ones dimmed, typed-over ones tagged, warnings on hover; click for full size).
+  5. *(done)* Save to Pi from the app, keeping the session locally to send later if the Pi is offline; README section.
+
+     As built: `video/pi.py` posts with `urllib` (30 s timeout) and keeps the Pi's status and reason in `PiError`. `video/outbox.py` keeps unsent tests. App routes: `POST /api/save`, `GET /api/outbox`, `POST /api/outbox/send` (stops at the first that can't reach the Pi), `GET /api/pi/temps`. Session state carries `saved` (saved or queued, the test id, and the review version saved), so the page says when the review changed since saving. Tests: the Pi's endpoint in `tests/test_bounce.py` (save, save again in place, pictures, CSV, 16 kinds of bad request); in `tests/test_video_app.py` a clip's review through the Pi's real endpoint (kept while the Pi is away, sent later, saved again after edits and after Analyse again, refused once its batch is deleted), and `PiClient` over real HTTP. Checked in the browser with the demo camera against a scratch dashboard: save, the changed-since warning, the Pi stopped, Send now, and the pictures on the dashboard.
 
   Acceptance:
   - synthetic clips are measured to within 0.5%, including tilted ones;

@@ -125,6 +125,33 @@ MIGRATIONS: list[str] = [
 
     ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id) ON DELETE SET NULL;
     """,
+    # 4: bounce tests measured from video (PLAN.md 6.3)
+    """
+    ALTER TABLE bounce_tests ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+    ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;
+
+    CREATE TABLE bounce_video_analyses (
+        id           INTEGER PRIMARY KEY,
+        test_id      INTEGER NOT NULL UNIQUE REFERENCES bounce_tests(id) ON DELETE CASCADE,
+        save_key     TEXT UNIQUE,
+        filename     TEXT NOT NULL,
+        video_json   TEXT NOT NULL,
+        params_json  TEXT NOT NULL
+    );
+
+    CREATE TABLE bounce_video_drops (
+        id           INTEGER PRIMARY KEY,
+        analysis_id  INTEGER NOT NULL REFERENCES bounce_video_analyses(id) ON DELETE CASCADE,
+        seq          INTEGER NOT NULL,
+        ball_no      INTEGER NOT NULL,
+        rebound_cm   REAL,
+        kept         INTEGER NOT NULL,
+        edited_cm    REAL,
+        detail_json  TEXT NOT NULL,
+        image        BLOB
+    );
+    CREATE INDEX idx_bounce_video_drops_analysis ON bounce_video_drops(analysis_id, seq);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -548,29 +575,56 @@ class BounceSetup:
     is_itf: bool
     note: str | None
     used: bool  # referenced by a test, reference value or conversion: can't be deleted
+    mid_mark_cm: float | None = None  # video calibration mark between floor and drop height
 
 
 def insert_setup(
-    conn: sqlite3.Connection, name: str, drop_cm: float, is_itf: bool, note: str | None = None
+    conn: sqlite3.Connection,
+    name: str,
+    drop_cm: float,
+    is_itf: bool,
+    note: str | None = None,
+    mid_mark_cm: float | None = None,
 ) -> int:
     """Raises sqlite3.IntegrityError if the name is taken."""
     with conn:
         return conn.execute(
-            "INSERT INTO bounce_setups (name, drop_cm, is_itf, note) VALUES (?, ?, ?, ?)",
-            (name, drop_cm, int(is_itf), note),
+            "INSERT INTO bounce_setups (name, drop_cm, is_itf, note, mid_mark_cm) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, drop_cm, int(is_itf), note, mid_mark_cm),
         ).lastrowid
+
+
+def set_setup_mid_mark(conn: sqlite3.Connection, setup_id: int, mid_mark_cm: float | None) -> bool:
+    """The mid mark is the one thing about a setup that can change: it doesn't alter
+    tests already taken. False if the setup doesn't exist."""
+    with conn:
+        return (
+            conn.execute(
+                "UPDATE bounce_setups SET mid_mark_cm = ? WHERE id = ?", (mid_mark_cm, setup_id)
+            ).rowcount
+            > 0
+        )
 
 
 def list_setups(conn: sqlite3.Connection) -> list[BounceSetup]:
     rows = conn.execute(
-        """SELECT s.id, s.name, s.drop_cm, s.is_itf, s.note,
+        """SELECT s.id, s.name, s.drop_cm, s.is_itf, s.note, s.mid_mark_cm,
                   EXISTS (SELECT 1 FROM bounce_tests WHERE setup_id = s.id)
                   OR EXISTS (SELECT 1 FROM reference_rebounds WHERE setup_id = s.id)
                   OR EXISTS (SELECT 1 FROM setup_conversions WHERE setup_id = s.id) AS used
            FROM bounce_setups s ORDER BY s.id"""
     ).fetchall()
     return [
-        BounceSetup(r["id"], r["name"], r["drop_cm"], bool(r["is_itf"]), r["note"], bool(r["used"]))
+        BounceSetup(
+            r["id"],
+            r["name"],
+            r["drop_cm"],
+            bool(r["is_itf"]),
+            r["note"],
+            bool(r["used"]),
+            r["mid_mark_cm"],
+        )
         for r in rows
     ]
 
@@ -684,6 +738,7 @@ class BounceTest:
     temp_c: float | None
     note: str | None
     drops: tuple[BounceDrop, ...]
+    source: str = "manual"  # manual | video
 
 
 def _insert_drops(conn: sqlite3.Connection, test_id: int, drops: Iterable[BounceDrop]) -> None:
@@ -705,13 +760,17 @@ def insert_test(
 ) -> int:
     """Store a bounce test and its drops in one transaction."""
     with conn:
-        test_id = conn.execute(
-            """INSERT INTO bounce_tests (ts, batch_id, setup_id, context, temp_c, note)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (ts, batch_id, setup_id, context, temp_c, note),
-        ).lastrowid
-        _insert_drops(conn, test_id, drops)
-        return test_id
+        return _insert_test(conn, ts, batch_id, setup_id, context, temp_c, note, drops, "manual")
+
+
+def _insert_test(conn, ts, batch_id, setup_id, context, temp_c, note, drops, source) -> int:
+    test_id = conn.execute(
+        """INSERT INTO bounce_tests (ts, batch_id, setup_id, context, temp_c, note, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (ts, batch_id, setup_id, context, temp_c, note, source),
+    ).lastrowid
+    _insert_drops(conn, test_id, drops)
+    return test_id
 
 
 def replace_test(
@@ -725,25 +784,30 @@ def replace_test(
     note: str | None,
     drops: Iterable[BounceDrop],
 ) -> bool:
-    """Overwrite a test and all its drops; False if it doesn't exist."""
+    """Overwrite a test and all its drops; False if it doesn't exist. A video test
+    keeps its analysis and pictures, as the record of what was measured."""
     with conn:
-        updated = conn.execute(
-            """UPDATE bounce_tests SET ts = ?, batch_id = ?, setup_id = ?, context = ?,
-                   temp_c = ?, note = ?
-               WHERE id = ?""",
-            (ts, batch_id, setup_id, context, temp_c, note, test_id),
-        ).rowcount
-        if not updated:
-            return False
-        conn.execute("DELETE FROM bounce_drops WHERE test_id = ?", (test_id,))
-        _insert_drops(conn, test_id, drops)
-        return True
+        return _replace_test(conn, test_id, ts, batch_id, setup_id, context, temp_c, note, drops)
+
+
+def _replace_test(conn, test_id, ts, batch_id, setup_id, context, temp_c, note, drops) -> bool:
+    updated = conn.execute(
+        """UPDATE bounce_tests SET ts = ?, batch_id = ?, setup_id = ?, context = ?,
+               temp_c = ?, note = ?
+           WHERE id = ?""",
+        (ts, batch_id, setup_id, context, temp_c, note, test_id),
+    ).rowcount
+    if not updated:
+        return False
+    conn.execute("DELETE FROM bounce_drops WHERE test_id = ?", (test_id,))
+    _insert_drops(conn, test_id, drops)
+    return True
 
 
 def list_tests(conn: sqlite3.Connection, batch_id: int | None = None) -> list[BounceTest]:
     """Tests oldest first, each with its drops in ball order."""
     tests = conn.execute(
-        """SELECT id, ts, batch_id, setup_id, context, temp_c, note FROM bounce_tests
+        """SELECT id, ts, batch_id, setup_id, context, temp_c, note, source FROM bounce_tests
            WHERE (:batch IS NULL OR batch_id = :batch) ORDER BY ts, id""",
         {"batch": batch_id},
     ).fetchall()
@@ -761,6 +825,151 @@ def list_tests(conn: sqlite3.Connection, batch_id: int | None = None) -> list[Bo
 def delete_test(conn: sqlite3.Connection, test_id: int) -> bool:
     with conn:
         return conn.execute("DELETE FROM bounce_tests WHERE id = ?", (test_id,)).rowcount > 0
+
+
+# --- video tests (PLAN.md 6.3) ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VideoDrop:
+    """One drop the laptop app found, kept or rejected in review."""
+
+    seq: int  # order in the video
+    ball_no: int  # after review
+    rebound_cm: float | None  # as measured
+    kept: bool
+    edited_cm: float | None  # typed over the measurement in review
+    detail: dict  # rows, times, fit residuals, warnings
+    image: bytes | None = None  # JPEG of the drop with its lines drawn
+
+
+@dataclass(frozen=True)
+class VideoDropInfo:
+    """A stored video drop without its picture."""
+
+    id: int
+    seq: int
+    ball_no: int
+    rebound_cm: float | None
+    kept: bool
+    edited_cm: float | None
+    has_image: bool
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VideoAnalysis:
+    test_id: int
+    filename: str
+    video: dict
+    params: dict
+    drops: tuple[VideoDropInfo, ...]
+
+
+def save_video_test(
+    conn: sqlite3.Connection,
+    save_key: str,
+    ts: float,
+    batch_id: int,
+    setup_id: int,
+    context: str,
+    temp_c: float | None,
+    note: str | None,
+    drops: Iterable[BounceDrop],
+    filename: str,
+    video: dict,
+    params: dict,
+    video_drops: Iterable[VideoDrop],
+) -> tuple[int, bool]:
+    """Store a reviewed video test, its analysis and its pictures in one transaction.
+
+    ``save_key`` identifies the review on the laptop: saving it again (after more
+    edits, or a retry after a lost reply) replaces that test rather than adding a
+    second one. Returns (test id, whether it was new).
+    """
+    with conn:
+        row = conn.execute(
+            "SELECT id, test_id FROM bounce_video_analyses WHERE save_key = ?", (save_key,)
+        ).fetchone()
+        if row is None:
+            test_id = _insert_test(
+                conn, ts, batch_id, setup_id, context, temp_c, note, drops, "video"
+            )
+            analysis_id = conn.execute(
+                """INSERT INTO bounce_video_analyses
+                   (test_id, save_key, filename, video_json, params_json) VALUES (?, ?, ?, ?, ?)""",
+                (test_id, save_key, filename, json.dumps(video), json.dumps(params)),
+            ).lastrowid
+            created = True
+        else:
+            test_id, analysis_id = row["test_id"], row["id"]
+            _replace_test(conn, test_id, ts, batch_id, setup_id, context, temp_c, note, drops)
+            conn.execute(
+                """UPDATE bounce_video_analyses SET filename = ?, video_json = ?, params_json = ?
+                   WHERE id = ?""",
+                (filename, json.dumps(video), json.dumps(params), analysis_id),
+            )
+            conn.execute("DELETE FROM bounce_video_drops WHERE analysis_id = ?", (analysis_id,))
+            created = False
+        conn.executemany(
+            """INSERT INTO bounce_video_drops
+               (analysis_id, seq, ball_no, rebound_cm, kept, edited_cm, detail_json, image)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    analysis_id,
+                    d.seq,
+                    d.ball_no,
+                    d.rebound_cm,
+                    int(d.kept),
+                    d.edited_cm,
+                    json.dumps(d.detail),
+                    d.image,
+                )
+                for d in video_drops
+            ],
+        )
+        return test_id, created
+
+
+def list_video_analyses(conn: sqlite3.Connection) -> dict[int, VideoAnalysis]:
+    """Every video test's analysis and drops (pictures left out), by test id."""
+    drops: dict[int, list[VideoDropInfo]] = {}
+    for r in conn.execute(
+        """SELECT id, analysis_id, seq, ball_no, rebound_cm, kept, edited_cm, detail_json,
+                  image IS NOT NULL AS has_image
+           FROM bounce_video_drops ORDER BY analysis_id, seq"""
+    ):
+        detail = json.loads(r["detail_json"])
+        drops.setdefault(r["analysis_id"], []).append(
+            VideoDropInfo(
+                r["id"],
+                r["seq"],
+                r["ball_no"],
+                r["rebound_cm"],
+                bool(r["kept"]),
+                r["edited_cm"],
+                bool(r["has_image"]),
+                tuple(detail.get("warnings", ())),
+            )
+        )
+    return {
+        r["test_id"]: VideoAnalysis(
+            r["test_id"],
+            r["filename"],
+            json.loads(r["video_json"]),
+            json.loads(r["params_json"]),
+            tuple(drops.get(r["id"], ())),
+        )
+        for r in conn.execute(
+            "SELECT id, test_id, filename, video_json, params_json FROM bounce_video_analyses"
+        )
+    }
+
+
+def video_drop_image(conn: sqlite3.Connection, drop_id: int) -> bytes | None:
+    row = conn.execute("SELECT image FROM bounce_video_drops WHERE id = ?", (drop_id,)).fetchone()
+    return None if row is None else row["image"]
 
 
 @dataclass(frozen=True)

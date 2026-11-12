@@ -71,11 +71,12 @@
 
       <details class="sub" id="setups-box">
         <summary>Test setups</summary>
-        <p class="hint">How you test: drop height and surface. Pick one and keep using it, so tests compare. A setup can't be changed once used.</p>
+        <p class="hint">How you test: drop height and surface. Pick one and keep using it, so tests compare. A setup can't be changed once used, except its mid mark: the second mark on the wall that the video app calibrates with, near typical rebound heights.</p>
         <ul class="mini" id="setups"></ul>
         <form id="setup-form" class="inline-form">
           <input id="setup-name" maxlength="60" placeholder="Name, e.g. Garage slab" aria-label="Setup name" required>
           <span class="with-unit"><input id="setup-drop" inputmode="decimal" placeholder="Drop height" aria-label="Drop height" required><span class="len-unit"></span></span>
+          <span class="with-unit"><input id="setup-mid" inputmode="decimal" placeholder="Mid mark (video)" aria-label="Mid mark for video, optional"><span class="len-unit"></span></span>
           <label class="toggle"><input type="checkbox" id="setup-itf"> ITF method: 100 in onto concrete</label>
           <input id="setup-note" maxlength="1000" placeholder="Note (optional)" aria-label="Note">
           <button type="submit">Add setup</button>

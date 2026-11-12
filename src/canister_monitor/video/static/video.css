@@ -119,6 +119,21 @@ label > input, label > select {
 }
 
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+label[for] { margin-bottom: 3px; }
+.with-select { display: flex; gap: 6px; margin-bottom: 4px; }
+.with-select input, .with-select select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.with-select input { flex: 1; min-width: 0; }
+#save-temp-note { margin: 0 0 10px; }
+#save-status.ok { color: var(--ok); }
+#save-status.warn { color: var(--warn); }
+.outbox { list-style: none; margin: 8px 0; padding: 0; font-size: 0.9rem; }
+.outbox li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.outbox li .muted { display: block; font-size: 0.8rem; }
 
 button, a.button {
   padding: 7px 14px;

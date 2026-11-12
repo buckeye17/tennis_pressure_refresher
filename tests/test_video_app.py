@@ -13,11 +13,11 @@ cv2 = pytest.importorskip("cv2")
 
 import numpy as np  # noqa: E402
 
-from canister_monitor.video import synth  # noqa: E402
+from canister_monitor.video import outbox, synth  # noqa: E402
 from canister_monitor.video.app import create_app  # noqa: E402
 from canister_monitor.video.measure import Measurer, Observation  # noqa: E402
 from canister_monitor.video.pi import PiClient, PiError  # noqa: E402
-from canister_monitor.video.session import Params, Review, ReviewDrop  # noqa: E402
+from canister_monitor.video.session import Params, Review, ReviewDrop, Run  # noqa: E402
 from canister_monitor.video.sources import rotated  # noqa: E402
 
 H = 182.88  # 72 in
@@ -64,6 +64,56 @@ class FakePi:
                 | {"retired_ts": 1.65e9, "location": None, "tests": []},
             ],
         }
+
+    def canisters(self) -> dict:
+        if not self.ok:
+            raise PiError("can't reach http://pi.test:5000: refused")
+        return {
+            "canisters": [
+                {"mac": "w", "canister": "Old one", "stale": True, "reading": {"temp_c": 30.0}},
+                {"mac": "y", "canister": "Canister 2", "stale": False, "reading": {"temp_c": 19.0}},
+                {"mac": "x", "canister": "Canister 1", "stale": False, "reading": {"temp_c": 21.0}},
+                {"mac": "z", "canister": None, "stale": False, "reading": None},
+            ]
+        }
+
+
+class PiApp:
+    """The real dashboard app behind PiClient's interface, so a review's document goes
+    through the Pi's real endpoint. ``down`` makes it unreachable."""
+
+    base_url = "http://pi.test:5000"
+
+    def __init__(self, tmp_path) -> None:
+        from canister_monitor.config import parse_config
+        from canister_monitor.web import create_app as create_pi_app
+
+        app = create_pi_app(parse_config({}), db_path=tmp_path / "pi.db", clock=lambda: 1.7e9)
+        self.client = app.test_client()
+        self.down = False
+        self.sent = 0
+        setup = {"name": "Garage door", "drop_cm": H, "mid_mark_cm": MID}
+        self.setup_id = self.client.post("/api/bounce/setups", json=setup).get_json()["id"]
+        batch = {"brand": "Penn", "model": "Championship", "n_balls": 4}
+        self.batch_id = self.client.post("/api/bounce/batches", json=batch).get_json()["id"]
+
+    def bounce(self) -> dict:
+        return self.client.get("/api/bounce").get_json()
+
+    def canisters(self) -> dict:
+        return self.client.get("/api/canisters").get_json()
+
+    def save_video_test(self, doc: dict) -> tuple[int, dict]:
+        if self.down:
+            raise PiError("can't reach http://pi.test:5000: timed out")
+        resp = self.client.post("/api/bounce/video-tests", json=doc)
+        if resp.status_code >= 400:
+            raise PiError(f"the Pi refused: {resp.get_json()['error']}", resp.status_code)
+        self.sent += 1
+        return resp.status_code, resp.get_json()
+
+    def tests(self) -> list[dict]:
+        return [t for b in self.bounce()["batches"] for t in b["tests"]]
 
 
 def corrected(truth_drop: dict) -> float:
@@ -192,6 +242,7 @@ def test_pi_states(tmp_path):
         "sample_size": 2,
         "tests": 1,
         "in_canister": True,
+        "mac": "x",
     }
     _, client = make_client(tmp_path, pi=FakePi(ok=False))
     pi = client.get("/api/pi").get_json()
@@ -519,6 +570,140 @@ def test_clip_upload_and_analysis(tmp_path):
     st = client.post("/api/reanalyse", json={"pick": None, "area": None}).get_json()
     assert st["area"] is None
     wait_for(client, lambda s: s["phase"] == "review")
+
+
+# --- saving to the Pi ------------------------------------------------------------------------
+
+
+def test_save_to_pi_end_to_end_with_the_pi_away_at_first(tmp_path):
+    """A clip's review goes through the Pi's real endpoint: kept on the laptop while the
+    Pi is away, sent later, then saved again in place after edits and Analyse again."""
+    cam = synth.Camera.framing(H, 10.0, **SMALL)
+    spec = synth.SessionSpec(cor=(0.73, 0.70), drops_per_ball=2, distractor=False)
+    clip = tmp_path / "phone.mp4"
+    synth.write_clip(clip, cam, spec)
+    pi = PiApp(tmp_path)
+    app, client = make_client(tmp_path, pi=pi)
+    recordings = tmp_path / "recordings"
+    params = dict(PARAMS, batch_id=pi.batch_id, setup_id=pi.setup_id, context="after")
+
+    name = client.post("/api/upload?name=phone.mp4", data=clip.read_bytes()).get_json()["file"]
+    client.post("/api/clip", json={"file": name, "params": params})
+    st = wait_for(client, lambda s: s["phase"] == "review")
+    assert st["saved"] is None and len(st["review"]["drops"]) == 4
+
+    assert client.post("/api/save", json={"temp_c": 99}).status_code == 400
+    pi.down = True
+    st = client.post("/api/save", json={"temp_c": 21.5, "note": " garage "}).get_json()
+    assert st["saved"]["status"] == "queued" and "timed out" in st["saved"]["error"]
+    kept = recordings / st["saved"]["file"]
+    assert kept.name == name.removesuffix(".mp4") + ".unsent.json"
+    [item] = client.get("/api/outbox").get_json()["items"]
+    assert (item["batch"], item["context"], item["drops"]) == ("Penn Championship", "after", 4)
+    res = client.post("/api/outbox/send").get_json()
+    assert res["sent"] == 0 and len(res["items"]) == 1 and "timed out" in res["failed"][0]["error"]
+
+    pi.down = False
+    res = client.post("/api/outbox/send").get_json()
+    assert (res["sent"], res["items"], res["failed"]) == (1, [], [])
+    assert not kept.exists() and kept.with_name(kept.name.replace(".unsent", ".sent")).is_file()
+    st = client.get("/api/state").get_json()
+    assert st["saved"]["status"] == "saved" and st["saved"]["created"]
+    [test] = pi.tests()
+    assert test["id"] == st["saved"]["test_id"]
+    assert (test["source"], test["context"], test["temp_c"], test["note"]) == (
+        "video",
+        "after",
+        21.5,
+        "garage",
+    )
+    measured = [d["measured_cm"] for d in st["review"]["drops"]]
+    assert [d["rebound_cm"] for d in test["drops"]] == pytest.approx(measured)
+    assert [d["ball_no"] for d in test["drops"]] == [1, 1, 2, 2]
+    assert test["video"]["filename"] == name and test["video"]["calibration"] == "projective"
+    pic = pi.client.get(f"/api/bounce/video-drops/{test['video']['drops'][0]['id']}.jpg")
+    assert pic.mimetype == "image/jpeg" and len(pic.data) > 1000
+
+    # Edited after saving: Save again updates the same test.
+    st = client.post("/api/review/1", json={"kept": False}).get_json()
+    assert st["saved"]["version"] != st["review"]["version"]
+    st = client.post("/api/save", json={"temp_c": 21.5}).get_json()
+    assert st["saved"]["status"] == "saved" and not st["saved"]["created"]
+    [test] = pi.tests()
+    assert len(test["drops"]) == 3 and [d["kept"] for d in test["video"]["drops"]].count(False) == 1
+
+    # Analyse again re-measures the same session: still the same test on the Pi.
+    client.post("/api/reanalyse", json={"pick": None})
+    st = wait_for(client, lambda s: s["phase"] == "review")
+    assert st["saved"]["status"] == "saved" and st["saved"]["version"] is None
+    st = client.post("/api/save", json={"temp_c": None}).get_json()
+    assert not st["saved"]["created"]
+    [test] = pi.tests()
+    assert len(test["drops"]) == 4 and test["temp_c"] is None
+
+    # A test the Pi refuses isn't kept to send later: the page shows why.
+    pi.client.delete(f"/api/bounce/batches/{pi.batch_id}")
+    resp = client.post("/api/save", json={})
+    assert resp.status_code == 400 and "not found" in resp.get_json()["error"]
+    assert client.get("/api/outbox").get_json()["items"] == []
+    assert pi.sent == 3
+
+
+def test_save_needs_a_session_set_up_from_the_pi(tmp_path):
+    app, client = make_client(tmp_path)
+    assert client.post("/api/save", json={}).status_code == 404  # no session
+    run = Run(1, tmp_path)
+    run.params = Params(drop_height_cm=200.66)  # measured with the Pi away at set-up
+    run.review = review_of([110.0, 111.0])
+    run.phase = "review"
+    app.extensions["video"]["controller"].run = run
+    resp = client.post("/api/save", json={"temp_c": 20.0})
+    assert resp.status_code == 409 and "batch and setup" in resp.get_json()["error"]
+
+
+def test_room_temperatures_from_the_pi(tmp_path):
+    _, client = make_client(tmp_path)
+    temps = client.get("/api/pi/temps").get_json()
+    assert temps["ok"] and [t["mac"] for t in temps["temps"]] == ["y", "x"]  # fresh only
+    _, client = make_client(tmp_path, pi=FakePi(ok=False))
+    temps = client.get("/api/pi/temps").get_json()
+    assert not temps["ok"] and temps["temps"] == []
+
+
+def test_outbox_skips_unreadable_files(tmp_path):
+    (tmp_path / "a.unsent.json").write_text("{not json")
+    outbox.keep(tmp_path / "b.unsent.json", {"key": "k1", "test": {"drops": [{}]}})
+    assert [p.name for p, _ in outbox.pending(tmp_path)] == ["b.unsent.json"]
+    outbox.mark_sent_by_key(tmp_path, "k1")
+    assert outbox.pending(tmp_path) == [] and (tmp_path / "b.sent.json").is_file()
+
+
+def test_pi_client_saves_over_http_and_keeps_the_pis_reason(tmp_path):
+    import threading
+
+    from werkzeug.serving import make_server
+
+    pi = PiApp(tmp_path)
+    server = make_server("127.0.0.1", 0, pi.client.application, threaded=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = PiClient(f"http://127.0.0.1:{server.port}")
+        drop = {"seq": 0, "ball_no": 1, "rebound_cm": 120.0, "kept": True, "edited_cm": None}
+        doc = {
+            "key": "http-test-1",
+            "test": {"batch_id": pi.batch_id, "setup_id": pi.setup_id, "context": "new"},
+            "analysis": {"filename": "x.mp4", "video": {}, "params": {}},
+            "drops": [drop],
+        }
+        status, test = client.save_video_test(doc)
+        assert status == 201 and test["source"] == "video"
+        assert client.save_video_test(doc)[0] == 200  # the same key again: replaced
+        with pytest.raises(PiError, match="the Pi refused: .*batch 99 not found") as e:
+            client.save_video_test({**doc, "test": {**doc["test"], "batch_id": 99}})
+        assert e.value.status == 400 and not e.value.retry_later
+    finally:
+        server.shutdown()
+    assert PiError("x").retry_later and PiError("x", 503).retry_later
 
 
 def test_not_a_video(tmp_path):

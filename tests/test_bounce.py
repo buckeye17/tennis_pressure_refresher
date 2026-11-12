@@ -1,3 +1,4 @@
+import base64
 import csv
 import io
 import sqlite3
@@ -419,3 +420,157 @@ def test_outlier_check_for_the_test_form(seeded):
         client.post("/api/bounce/outliers", json={"rebounds_cm": ["x"]})
     )
     assert "list" in error_of(client.post("/api/bounce/outliers", json={"rebounds_cm": 5}))
+
+
+# --- video tests (PLAN.md 6.3) ---------------------------------------------------------
+
+JPEG = base64.b64encode(b"\xff\xd8\xff\xe0 a tiny picture \xff\xd9").decode()
+
+
+def video_doc(setup, batch, key="session-0001", **test):
+    """A reviewed test as the laptop app exports it: 3 drops, one rejected, one typed over."""
+    drops = [
+        {"seq": 0, "ball_no": 1, "rebound_cm": 110.2, "kept": True, "edited_cm": None},
+        {"seq": 1, "ball_no": 1, "rebound_cm": 101.8, "kept": False, "edited_cm": None},
+        {"seq": 2, "ball_no": 2, "rebound_cm": 99.0, "kept": True, "edited_cm": 109.5},
+    ]
+    for d in drops:
+        d |= {"outlier_z": None, "detail": {"warnings": ["release 2.2 cm high"]}}
+        d["image_jpeg"] = JPEG
+    return {
+        "key": key,
+        "tool": "ball-bounce-tracker 0.1",
+        "test": {
+            "ts": NOW - 600,
+            "batch_id": batch["id"],
+            "setup_id": setup["id"],
+            "context": "before",
+            "source": "video",
+            "drops": [{"ball_no": 1, "rebound_cm": 110.2}, {"ball_no": 2, "rebound_cm": 109.5}],
+            **test,
+        },
+        "set_up": {"batch_label": "Penn Champ"},
+        "summary": {},
+        "analysis": {
+            "filename": "20261111-101500.mp4",
+            "video": {"fps": 30.0, "calibration": {"method": "projective"}},
+            "params": {"tool": "ball-bounce-tracker 0.1"},
+        },
+        "drops": drops,
+    }
+
+
+def test_migration_from_v3_marks_old_tests_manual(tmp_path):
+    path = tmp_path / "v3.db"
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for version, sql in enumerate(db.MIGRATIONS[:3], start=1):
+        c.executescript(sql)
+        c.execute("INSERT INTO schema_version VALUES (?)", (version,))
+    c.execute("INSERT INTO bounce_setups (name, drop_cm) VALUES ('s', 183)")
+    c.execute(
+        "INSERT INTO ball_batches (brand, model, opened_ts, n_balls, sample_size) "
+        "VALUES ('Penn', 'Champ', 1, 4, 4)"
+    )
+    c.execute("INSERT INTO bounce_tests (ts, batch_id, setup_id, context) VALUES (1, 1, 1, 'new')")
+    c.commit()
+    c.close()
+    conn = db.connect(path)
+    assert [t.source for t in db.list_tests(conn)] == ["manual"]
+    assert db.list_setups(conn)[0].mid_mark_cm is None
+    conn.close()
+
+
+def test_setup_mid_mark(seeded):
+    client, setup, _ = seeded
+    assert setup["mid_mark_cm"] is None
+    body = {"name": "Hall", "drop_cm": 182.88, "mid_mark_cm": 91.44}
+    assert post(client, "/api/bounce/setups", body)["mid_mark_cm"] == 91.44
+    body = {"name": "x", "drop_cm": 182.88, "mid_mark_cm": 182.88}
+    assert "between the floor" in error_of(client.post("/api/bounce/setups", json=body))
+
+    path = f"/api/bounce/setups/{setup['id']}"
+    assert client.patch(path, json={"mid_mark_cm": 100.0}).get_json()["mid_mark_cm"] == 100.0
+    assert "between the floor" in error_of(client.patch(path, json={"mid_mark_cm": 300.0}))
+    assert "unknown" in error_of(client.patch(path, json={"drop_cm": 100.0}))
+    assert client.patch(path, json={"mid_mark_cm": None}).get_json()["mid_mark_cm"] is None
+    assert client.patch("/api/bounce/setups/99", json={}).status_code == 404
+
+
+def test_video_test_saved_with_its_pictures_and_saved_again_in_place(seeded):
+    client, setup, batch = seeded
+    doc = video_doc(setup, batch, temp_c=21.5)
+    test = post(client, "/api/bounce/video-tests", doc)
+    assert test["source"] == "video" and test["temp_c"] == 21.5 and test["ts"] == NOW - 600
+    assert [(d["ball_no"], d["rebound_cm"]) for d in test["drops"]] == [(1, 110.2), (2, 109.5)]
+    video = test["video"]
+    assert video["filename"] == "20261111-101500.mp4" and video["calibration"] == "projective"
+    assert [(d["seq"], d["kept"], d["edited_cm"]) for d in video["drops"]] == [
+        (0, True, None),
+        (1, False, None),
+        (2, True, 109.5),
+    ]
+    assert all(d["image"] for d in video["drops"])
+    assert video["drops"][0]["warnings"] == ["release 2.2 cm high"]
+    pic = client.get(f"/api/bounce/video-drops/{video['drops'][0]['id']}.jpg")
+    assert pic.mimetype == "image/jpeg" and pic.data[:2] == b"\xff\xd8"
+    assert client.get("/api/bounce/video-drops/999.jpg").status_code == 404
+
+    # The same review saved again (edited since): the same test, replaced.
+    doc["drops"][1]["kept"] = True
+    doc["test"]["drops"].insert(1, {"ball_no": 1, "rebound_cm": 101.8})
+    again = post(client, "/api/bounce/video-tests", doc, status=200)
+    assert again["id"] == test["id"] and len(again["drops"]) == 3
+    assert [d["kept"] for d in again["video"]["drops"]] == [True, True, True]
+    [listed] = client.get("/api/bounce").get_json()["batches"][0]["tests"]
+    assert listed["source"] == "video" and listed["video"]["drops"][1]["kept"]
+
+    rows = list(csv.DictReader(io.StringIO(client.get("/api/bounce.csv").get_data(as_text=True))))
+    assert {r["source"] for r in rows} == {"video"}
+
+    # Edited on the dashboard, a video test keeps its analysis as the record.
+    manual = {k: doc["test"][k] for k in ("batch_id", "setup_id", "context")}
+    manual["drops"] = [{"ball_no": 1, "rebound_cm": 111.0}]
+    edited = client.put(f"/api/bounce/tests/{test['id']}", json=manual).get_json()
+    assert edited["source"] == "video" and len(edited["video"]["drops"]) == 3
+
+    # Once the test is deleted, its key makes a new one (201, not 200).
+    assert client.delete(f"/api/bounce/tests/{test['id']}").status_code == 204
+    assert client.get(f"/api/bounce/video-drops/{video['drops'][0]['id']}.jpg").status_code == 404
+    post(client, "/api/bounce/video-tests", doc, status=201)
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        (lambda d: d.pop("key"), "missing"),
+        (lambda d: d.update(key="x y"), "key must be"),
+        (lambda d: d["test"].update(source="manual"), "source must be video"),
+        (lambda d: d["test"].update(batch_id=99), "batch 99 not found"),
+        (lambda d: d["test"].pop("context"), "missing"),
+        (lambda d: d["drops"][0].update(kept=False), "match the kept drops"),
+        (lambda d: d["drops"][0].update(ball_no=61), "ball_no must be between 1 and 60"),
+        (lambda d: d["drops"][2].update(edited_cm=500.0), "drop height"),
+        (lambda d: d["drops"][0].update(rebound_cm=190.0), "no higher than the drop height"),
+        (lambda d: d["drops"][0].update(image_jpeg="bm90IGEganBlZw=="), "base64 JPEG"),
+        (lambda d: d["drops"][0].update(image_jpeg="%%%"), "base64 JPEG"),
+        (lambda d: d["drops"][0].update(colour="red"), "unknown"),
+        (lambda d: d["drops"][2].update(seq=0), "unique"),
+        (lambda d: [x.update(kept=False) for x in d["drops"]], "no drops are kept"),
+        (lambda d: d["analysis"].update(extra=1), "analysis must be"),
+        (lambda d: d["analysis"].update(filename=""), "filename"),
+    ],
+)
+def test_video_test_validation(seeded, change, message):
+    client, setup, batch = seeded
+    doc = video_doc(setup, batch)
+    change(doc)
+    assert message in error_of(client.post("/api/bounce/video-tests", json=doc))
+    assert client.get("/api/bounce").get_json()["batches"][0]["tests"] == []
+
+
+def test_a_rejected_drop_may_sit_on_a_ball_beyond_the_batch(seeded):
+    client, setup, batch = seeded
+    doc = video_doc(setup, batch)
+    doc["drops"][1]["ball_no"] = 99  # a stray catch, numbered past the batch, then rejected
+    assert post(client, "/api/bounce/video-tests", doc)["video"]["drops"][1]["ball_no"] == 99

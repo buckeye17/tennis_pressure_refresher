@@ -4,12 +4,14 @@
 It serves a page on this laptop only (http://127.0.0.1:5100). The browser is
 just the screen: capture and analysis run here, in ``session.Controller``. The
 page polls ``/api/state`` a few times a second and shows ``/preview.mjpg``.
-Batches and setups come from the Pi's API. Saving a reviewed test to the Pi
-comes in a later step; meanwhile the review downloads as JSON.
+Batches and setups come from the Pi's API, and Save to Pi sends the reviewed
+test there. If the Pi can't take it, the test waits in ``recordings/`` (see
+``outbox``) to be sent from the page later.
 """
 
 import json
 import logging
+import math
 import threading
 import time
 import webbrowser
@@ -20,6 +22,7 @@ from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 from canister_monitor import __version__
+from canister_monitor.video import outbox
 from canister_monitor.video.pi import PiClient, PiError
 from canister_monitor.video.session import Controller, Params, frame_at, stamp
 from canister_monitor.video.sources import CameraSource, FrameSource, probe_cameras
@@ -115,6 +118,7 @@ def create_app(
                 "sample_size": b["sample_size"],
                 "tests": len(b.get("tests", [])),
                 "in_canister": bool((b.get("location") or {}).get("in_canister")),
+                "mac": (b.get("location") or {}).get("mac"),
             }
             for b in data.get("batches", [])
             if b.get("retired_ts") is None
@@ -129,6 +133,20 @@ def create_app(
                 "batches": batches,
             }
         )
+
+    @app.get("/api/pi/temps")
+    def get_temps():
+        """Fresh temperatures from the canister sensors, to pre-fill the room temperature."""
+        try:
+            data = pi.canisters()
+        except PiError as e:
+            return jsonify({"ok": False, "error": str(e), "temps": []})
+        temps = [
+            {"mac": c["mac"], "canister": c.get("canister"), "temp_c": c["reading"]["temp_c"]}
+            for c in data.get("canisters", [])
+            if not c.get("stale") and (c.get("reading") or {}).get("temp_c") is not None
+        ]
+        return jsonify({"ok": True, "error": None, "temps": temps})
 
     # --- sources -----------------------------------------------------------------------
 
@@ -298,6 +316,105 @@ def create_app(
             mimetype="application/json",
             headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
+
+    # --- saving to the Pi --------------------------------------------------------------
+
+    @app.post("/api/save")
+    def save():
+        """Send the reviewed test to the Pi: {"temp_c": degC or null, "note": text or null}.
+
+        If the Pi doesn't answer (or fails itself), the test is kept in recordings/
+        to send later, and the reply says so. If it refuses the test, nothing is kept:
+        the page shows why.
+        """
+        run, rev = review()
+        b = body()
+        p = run.params
+        if p is None or None in (p.batch_id, p.setup_id, p.context):
+            raise ApiError(
+                "This session wasn't set up with a batch and setup from the Pi, so it can't "
+                "be saved there. Download the JSON, or start the session again with the Pi "
+                "connected.",
+                409,
+            )
+        if not rev.kept():
+            raise ApiError("No drops are kept: there's nothing to save.")
+        temp, note = b.get("temp_c"), b.get("note")
+        if temp is not None and (
+            isinstance(temp, bool)
+            or not isinstance(temp, (int, float))
+            or not math.isfinite(temp)
+            or not -30 <= temp <= 60
+        ):
+            raise ApiError("the room temperature must be from -30 to 60 °C")
+        if note is not None and (not isinstance(note, str) or len(note) > 1000):
+            raise ApiError("the note must be text of at most 1000 characters")
+
+        doc = rev.export(run.started_ts, run.file.name if run.file else f"session-{run.id}")
+        doc["test"]["temp_c"] = None if temp is None else float(temp)
+        doc["test"]["note"] = (note or "").strip() or None
+        version = rev.version
+        try:
+            status, test = pi.save_video_test(doc)
+        except PiError as e:
+            if not e.retry_later:
+                raise ApiError(str(e), 400 if e.status and e.status < 500 else 502) from None
+            path = outbox.path_for(recordings, run.file, f"session-{stamp()}")
+            try:
+                outbox.keep(path, doc)
+            except OSError as oe:
+                raise ApiError(f"{e}; and couldn't keep it to send later: {oe}", 500) from None
+            log.warning("kept %s to send later: %s", path.name, e)
+            run.saved = {
+                "status": "queued",
+                "file": path.name,
+                "error": str(e),
+                "version": version,
+                "ts": time.time(),
+            }
+            return state()
+        outbox.mark_sent_by_key(recordings, doc["key"])
+        run.saved = {
+            "status": "saved",
+            "test_id": test["id"],
+            "created": status == 201,
+            "version": version,
+            "ts": time.time(),
+        }
+        return state()
+
+    @app.get("/api/outbox")
+    def get_outbox():
+        """Tests kept to send later."""
+        return jsonify({"items": [outbox.summary(p, d) for p, d in outbox.pending(recordings)]})
+
+    @app.post("/api/outbox/send")
+    def send_outbox():
+        """Try to send every kept test, oldest first. Stops at the first that can't reach
+        the Pi; one the Pi refuses stays kept, with its reason."""
+        sent, failed = 0, []
+        for path, doc in outbox.pending(recordings):
+            try:
+                status, test = pi.save_video_test(doc)
+            except PiError as e:
+                failed.append({"file": path.name, "error": str(e)})
+                if e.status is None:
+                    break  # the Pi is still away: no point trying the rest
+                continue
+            outbox.mark_sent(path)
+            sent += 1
+            run = controller.run
+            if run is not None and run.save_key == doc.get("key") and run.saved:
+                run.saved = {
+                    **run.saved,
+                    "status": "saved",
+                    "test_id": test["id"],
+                    "created": status == 201,
+                    "file": None,
+                    "error": None,
+                }
+        items = [outbox.summary(p, d) for p, d in outbox.pending(recordings)]
+        return jsonify({"sent": sent, "failed": failed, "items": items})
 
     # --- preview -----------------------------------------------------------------------
 

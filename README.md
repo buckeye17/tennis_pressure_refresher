@@ -90,6 +90,31 @@ The **Balls** panel tracks how your balls bounce, as planned in [PLAN.md §6.2](
 
 *Download bounce data (CSV)* exports every drop.
 
+### Measuring from video
+
+Ball Bounce Tracker is a laptop app that measures each drop from a webcam or a phone clip,
+instead of reading heights by eye. It runs on the laptop (it needs OpenCV), not on the Pi:
+
+```bash
+uv run --extra video ball-bounce-tracker
+```
+
+It opens in the browser and reads batches and setups from the Pi (`--pi URL` if it isn't
+`http://canisters.local:5000`). Put two marks on the wall at the drop line: the drop height, and a
+**mid mark** near typical rebound heights. Store the mid mark with the setup on the dashboard so
+the app fills it in.
+
+1. Pick the batch, setup and stage. Then pick a webcam, or drop in a phone clip.
+2. Start with three holds, the ball still on the floor, at the mid mark, then at the drop mark.
+   Then drop each numbered ball in order and catch it after its first bounce.
+3. **Review** each drop's picture. Fix a height, move a drop to another ball, or untick Keep.
+4. Check the room temperature (pre-filled from the batch's canister sensor) and press
+   **Save to Pi**. The test appears on the dashboard tagged *video*, with each drop's picture under
+   **Pictures**. Saving again after more edits updates the same test.
+
+If the Pi doesn't answer, the test is kept in `recordings/` and listed under **Waiting to be sent**.
+Press **Send now** when the Pi is back. Recordings of live sessions stay in `recordings/` too.
+
 ## How the sensors behave
 
 - They **only broadcast under pressure**. An unscrewed or empty sensor goes silent, and its card

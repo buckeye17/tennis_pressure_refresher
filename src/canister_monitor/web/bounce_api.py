@@ -1,9 +1,13 @@
 """JSON API for ball batches and bounce tests (PLAN.md section 6.2). Lengths are cm,
 temperatures degC, times UTC epoch seconds; the browser converts for display."""
 
+import base64
+import binascii
 import csv
 import io
+import json
 import math
+import re
 import sqlite3
 from datetime import datetime
 
@@ -111,7 +115,32 @@ def _rebound(value: object, name: str, drop_cm: float) -> float:
 # --- everything at once -----------------------------------------------------------
 
 
-def _test_json(t: db.BounceTest) -> dict:
+def _video_json(v: db.VideoAnalysis | None) -> dict | None:
+    """What the dashboard shows of a video test: the file, how it was calibrated, and
+    every drop found (pictures from ``/api/bounce/video-drops/<id>.jpg``)."""
+    if v is None:
+        return None
+    cal = v.video.get("calibration")
+    return {
+        "filename": v.filename,
+        "calibration": cal.get("method") if isinstance(cal, dict) else None,
+        "drops": [
+            {
+                "id": d.id,
+                "seq": d.seq,
+                "ball_no": d.ball_no,
+                "rebound_cm": d.rebound_cm,
+                "kept": d.kept,
+                "edited_cm": d.edited_cm,
+                "image": d.has_image,
+                "warnings": list(d.warnings),
+            }
+            for d in v.drops
+        ],
+    }
+
+
+def _test_json(t: db.BounceTest, video: db.VideoAnalysis | None = None) -> dict:
     s = summarize((d.ball_no, d.rebound_cm) for d in t.drops)
     flags, fit = outlier_json([d.rebound_cm for d in t.drops])
     return {
@@ -121,6 +150,8 @@ def _test_json(t: db.BounceTest) -> dict:
         "context": t.context,
         "temp_c": t.temp_c,
         "note": t.note,
+        "source": t.source,
+        "video": _video_json(video),
         "drops": [
             {"ball_no": d.ball_no, "rebound_cm": d.rebound_cm, "outlier_z": z}
             for d, z in zip(t.drops, flags, strict=True)
@@ -156,8 +187,9 @@ def bounce_all():
     conn = get_db()
     cfg = _ctx()["config"].bounce
     tests: dict[int, list[dict]] = {}
+    videos = db.list_video_analyses(conn)
     for t in db.list_tests(conn):
-        tests.setdefault(t.batch_id, []).append(_test_json(t))
+        tests.setdefault(t.batch_id, []).append(_test_json(t, videos.get(t.id)))
     locations = db.batch_locations(conn)
     batches = []
     for b in db.list_batches(conn):
@@ -191,9 +223,22 @@ def bounce_all():
 # --- setups --------------------------------------------------------------------------
 
 
+def _mid_mark(value: object, drop_cm: float) -> float | None:
+    """The video calibration mark (PLAN.md 6.3): between the floor and the drop height."""
+    if value is None:
+        return None
+    value = _number(value, "mid_mark_cm", 0.0, MAX_CM)
+    if not 0 < value < drop_cm:
+        raise ApiError(
+            f"mid_mark_cm must be between the floor and the drop height ({drop_cm:g} cm), "
+            f"got {value:g} cm: wrong units?"
+        )
+    return value
+
+
 @bounce_api.post("/api/bounce/setups")
 def create_setup():
-    body = _body({"name", "drop_cm", "is_itf", "note"}, {"name", "drop_cm"})
+    body = _body({"name", "drop_cm", "is_itf", "note", "mid_mark_cm"}, {"name", "drop_cm"})
     name = _text(body["name"], "name", TEXT_MAX)
     drop_cm = _number(body["drop_cm"], "drop_cm", 10.0, MAX_CM)
     is_itf = body.get("is_itf", False)
@@ -202,11 +247,24 @@ def create_setup():
     if is_itf and abs(drop_cm - ITF_DROP_CM) > 0.5:
         raise ApiError(f"an ITF setup drops from {ITF_DROP_CM:g} cm (100 in)")
     note = _text(body.get("note"), "note", NOTE_MAX, optional=True)
+    mid = _mid_mark(body.get("mid_mark_cm"), drop_cm)
     try:
-        setup_id = db.insert_setup(get_db(), name, drop_cm, is_itf, note)
+        setup_id = db.insert_setup(get_db(), name, drop_cm, is_itf, note, mid)
     except sqlite3.IntegrityError:
         raise ApiError(f"a setup named {name!r} already exists", 409) from None
-    return jsonify(db.BounceSetup(setup_id, name, drop_cm, is_itf, note, False).__dict__), 201
+    return jsonify(db.BounceSetup(setup_id, name, drop_cm, is_itf, note, False, mid).__dict__), 201
+
+
+@bounce_api.patch("/api/bounce/setups/<int:setup_id>")
+def update_setup(setup_id: int):
+    """Only the mid mark changes: the drop height and surface define the tests taken."""
+    body = _body({"mid_mark_cm"})
+    setup = next((s for s in db.list_setups(get_db()) if s.id == setup_id), None)
+    if setup is None:
+        raise ApiError(f"setup {setup_id} not found", 404)
+    if "mid_mark_cm" in body:
+        db.set_setup_mid_mark(get_db(), setup_id, _mid_mark(body["mid_mark_cm"], setup.drop_cm))
+    return jsonify(next(s for s in db.list_setups(get_db()) if s.id == setup_id).__dict__)
 
 
 @bounce_api.delete("/api/bounce/setups/<int:setup_id>")
@@ -321,7 +379,8 @@ def _test_args(body: dict) -> dict:
 
 
 def _saved_test(test_id: int) -> dict:
-    return _test_json(next(t for t in db.list_tests(get_db()) if t.id == test_id))
+    t = next(t for t in db.list_tests(get_db()) if t.id == test_id)
+    return _test_json(t, db.list_video_analyses(get_db()).get(test_id))
 
 
 @bounce_api.post("/api/bounce/tests")
@@ -344,6 +403,151 @@ def delete_test(test_id: int):
     if not db.delete_test(get_db(), test_id):
         raise ApiError(f"test {test_id} not found", 404)
     return "", 204
+
+
+# --- video tests (PLAN.md 6.3) -----------------------------------------------------------
+
+MAX_VIDEO_BYTES = 40 << 20  # the whole request: a long session's pictures, base64
+MAX_VIDEO_DROPS = 500
+MAX_IMAGE_BYTES = 512 << 10
+MAX_JSON_BYTES = 256 << 10  # each of the analysis' video and params, and each drop's detail
+SAVE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+VIDEO_DROP_FIELDS = {
+    "seq",
+    "ball_no",
+    "rebound_cm",
+    "kept",
+    "edited_cm",
+    "outlier_z",
+    "detail",
+    "image_jpeg",
+}
+
+
+def _json_object(value: object, name: str) -> dict:
+    if not isinstance(value, dict):
+        raise ApiError(f"{name} must be a JSON object")
+    if len(json.dumps(value)) > MAX_JSON_BYTES:
+        raise ApiError(f"{name} is too large")
+    return value
+
+
+def _jpeg(value: object, name: str) -> bytes | None:
+    if value is None:
+        return None
+    try:
+        data = base64.b64decode(value, validate=True) if isinstance(value, str) else None
+    except (binascii.Error, ValueError):
+        data = None
+    if data is None or data[:2] != b"\xff\xd8":
+        raise ApiError(f"{name} must be a base64 JPEG")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ApiError(f"{name} is larger than {MAX_IMAGE_BYTES >> 10} KB")
+    return data
+
+
+def _video_drop(d: object, i: int, n_balls: int, drop_cm: float) -> db.VideoDrop:
+    name = f"drop {i}"
+    if not isinstance(d, dict):
+        raise ApiError(f"{name} must be a JSON object")
+    unknown = set(d) - VIDEO_DROP_FIELDS
+    if unknown:
+        raise ApiError(f"{name}: unknown field(s): {', '.join(sorted(unknown))}")
+    kept = d.get("kept")
+    if not isinstance(kept, bool):
+        raise ApiError(f"{name}: kept must be true or false")
+    measured = d.get("rebound_cm")
+    edited = d.get("edited_cm")
+    return db.VideoDrop(
+        seq=_integer(d.get("seq"), f"{name} seq", 0, 10**7),
+        # A rejected drop may sit on a ball beyond the batch (a stray catch); a kept one can't.
+        ball_no=_integer(d.get("ball_no"), f"{name} ball_no", 1, n_balls if kept else MAX_BALLS),
+        rebound_cm=None if measured is None else _number(measured, f"{name} rebound_cm", 0, MAX_CM),
+        kept=kept,
+        edited_cm=None if edited is None else _rebound(edited, f"{name} edited_cm", drop_cm),
+        detail=_json_object(d.get("detail", {}), f"{name} detail"),
+        image=_jpeg(d.get("image_jpeg"), f"{name} image_jpeg"),
+    )
+
+
+@bounce_api.post("/api/bounce/video-tests")
+def save_video_test():
+    """A reviewed test from the laptop app, with its analysis and pictures, in one request:
+    the document the app's review exports, plus ``key``.
+
+    The test's drops are the kept drops at their reviewed heights (typed over, or
+    as measured). Saving the same ``key`` again replaces the test it made (200)
+    instead of adding another (201).
+    """
+    if (request.content_length or 0) > MAX_VIDEO_BYTES:
+        raise ApiError(f"the request is larger than {MAX_VIDEO_BYTES >> 20} MB", 413)
+    body = _body(
+        {"key", "tool", "test", "set_up", "summary", "analysis", "drops"},
+        {"key", "test", "analysis", "drops"},
+    )
+    key = body["key"]
+    if not isinstance(key, str) or not SAVE_KEY_RE.match(key):
+        raise ApiError("key must be 8-64 letters, digits, - or _")
+
+    test = body["test"]
+    if not isinstance(test, dict):
+        raise ApiError("test must be a JSON object")
+    unknown = set(test) - (TEST_FIELDS | {"source"})
+    if unknown:
+        raise ApiError(f"test: unknown field(s): {', '.join(sorted(unknown))}")
+    if test.get("source", "video") != "video":
+        raise ApiError("test source must be video")
+    missing = {k for k in ("batch_id", "setup_id", "context") if test.get(k) is None}
+    if missing:
+        raise ApiError(f"test: missing field(s): {', '.join(sorted(missing))}")
+    batch, setup = _batch(test["batch_id"]), _setup(test["setup_id"])
+
+    raw = body["drops"]
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_VIDEO_DROPS:
+        raise ApiError(f"drops must be a list of 1-{MAX_VIDEO_DROPS} drops")
+    video_drops = [
+        _video_drop(d, i, batch.n_balls, setup.drop_cm) for i, d in enumerate(raw, start=1)
+    ]
+    if len({d.seq for d in video_drops}) < len(video_drops):
+        raise ApiError("drop seq numbers must be unique")
+    kept = []
+    for d in video_drops:
+        if not d.kept:
+            continue
+        height = d.edited_cm if d.edited_cm is not None else d.rebound_cm
+        if height is None:
+            raise ApiError(f"drop seq {d.seq} is kept but has no height")
+        _rebound(height, f"drop seq {d.seq} height", setup.drop_cm)
+        kept.append({"ball_no": d.ball_no, "rebound_cm": height})
+    if not kept:
+        raise ApiError("no drops are kept: there's no test to save")
+    # The test's own list, if sent, must be what review left (catches a stale export).
+    if "drops" in test and test["drops"] != kept:
+        raise ApiError("test drops don't match the kept drops at their reviewed heights")
+
+    args = _test_args({**{k: v for k, v in test.items() if k != "source"}, "drops": kept})
+    analysis = body["analysis"]
+    if not isinstance(analysis, dict) or set(analysis) - {"filename", "video", "params"}:
+        raise ApiError("analysis must be {filename, video, params}")
+    test_id, created = db.save_video_test(
+        get_db(),
+        key,
+        **args,
+        filename=_text(analysis.get("filename"), "analysis filename", 255),
+        video=_json_object(analysis.get("video", {}), "analysis video"),
+        params=_json_object(analysis.get("params", {}), "analysis params"),
+        video_drops=video_drops,
+    )
+    return jsonify(_saved_test(test_id)), 201 if created else 200
+
+
+@bounce_api.get("/api/bounce/video-drops/<int:drop_id>.jpg")
+def video_drop_image(drop_id: int):
+    jpeg = db.video_drop_image(get_db(), drop_id)
+    if jpeg is None:
+        raise ApiError(f"no picture for video drop {drop_id}", 404)
+    # A drop's picture never changes: saving a review again makes new drop ids.
+    return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
 
 # --- reference values and ITF conversion ----------------------------------------------
@@ -417,6 +621,7 @@ CSV_COLUMNS = [
     "rebound_in",
     "note",
     "outlier_z",  # blank unless the drop doesn't fit its test's others (bounce.fit_normal)
+    "source",  # manual | video
 ]
 
 
@@ -450,6 +655,7 @@ def export_bounce_csv():
                     f"{d.rebound_cm / CM_PER_IN:.2f}",
                     t.note or "",
                     "" if z is None else f"{z:.2f}",
+                    t.source,
                 ]
             )
     stamp = datetime.fromtimestamp(_ctx()["clock"]()).strftime("%Y%m%d-%H%M")

@@ -272,8 +272,17 @@ a { color: var(--accent); }
 .batch .latest { font-size: 0.9rem; }
 .batch .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .tag { font-size: 0.75rem; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
-.tests-wrap { max-height: 320px; margin-top: 6px; }
-.row-actions { text-align: right; }
+.tests-wrap { max-height: 480px; margin-top: 6px; }
+.row-actions { text-align: right; white-space: nowrap; }
+.video-tag { margin-left: 6px; }
+.pictures-row > td { background: var(--grid); }
+.drop-pics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.drop-pic { margin: 0; width: 132px; font-size: 0.75rem; }
+.drop-pic img, .drop-pic .no-pic { display: block; width: 132px; height: 176px; object-fit: contain; background: #000; border-radius: 4px; }
+.drop-pic .no-pic { color: #aaa; display: grid; place-items: center; }
+.drop-pic.rejected { opacity: 0.45; }
+.drop-pic figcaption { margin-top: 2px; white-space: normal; }
+.drop-pic .tag { margin-left: 4px; }
 
 details.sub { border-top: 1px solid var(--border); padding: 8px 0; }
 details.sub > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }

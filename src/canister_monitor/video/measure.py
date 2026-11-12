@@ -199,6 +199,20 @@ def _quad_fit(ts: list[float], ys: list[float], t0: float) -> tuple[np.ndarray, 
     return c, rms
 
 
+def _line_fit(
+    ts: list[float], ys: list[float], t0: float, c2: float
+) -> tuple[np.ndarray, float] | None:
+    """``_quad_fit`` with the curvature ``c2`` given, so 2 points are enough."""
+    if len(ts) < 2 or max(ts) == min(ts):
+        return None
+    x = np.asarray(ts) - t0
+    y = np.asarray(ys)
+    c1, c0 = np.polyfit(x, y - c2 * x**2, 1)
+    c = np.array([c0, c1, c2])
+    rms = float(np.sqrt(np.mean((np.polynomial.polynomial.polyval(x, c) - y) ** 2)))
+    return c, rms
+
+
 def _quad_eval(c: np.ndarray, t: float, t0: float) -> float:
     return float(np.polynomial.polynomial.polyval(t - t0, c))
 
@@ -665,6 +679,13 @@ class Measurer:
             return None
         low_rise = [(t, z) for t, z in rise if z > top_z + 0.4 * span and t < t_top]
         rise_fit = _quad_fit([t for t, _ in low_rise], [z for _, z in low_rise], t_imp)
+        if rise_fit is None and fall_fit[0][2] > 0:
+            # At 30 fps the low part of the rise is ~5 frames, so one lost by the floor
+            # (the ball squashed or blurred into the floor's colour) lost the drop.
+            # Gravity is the same both ways, so take the fall's curvature: 2 frames do.
+            rise_fit = _line_fit(
+                [t for t, _ in low_rise], [z for _, z in low_rise], t_imp, fall_fit[0][2]
+            )
         top = self._apex_points(rise, top_z + s.apex_band * span, t_top, radius_z)
         apex_fit = _quad_fit([t for t, _ in top], [z for _, z in top], t_top)
         if rise_fit is None or apex_fit is None:

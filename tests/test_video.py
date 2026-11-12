@@ -273,6 +273,24 @@ def test_one_bad_frame_does_not_end_the_rise():
         assert d.rebound_cm == pytest.approx(corrected(t), rel=0.003)
 
 
+def test_frames_lost_just_after_the_bounce_do_not_lose_the_drop():
+    """At 30 fps the low part of the rise is ~5 frames; losing some by the floor (the
+    ball squashed, or blurred into the floor's colour) once lost a drop."""
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, truth = observations(synth.Camera.framing(H, 10.0), spec)
+    clean, _ = run(obs, spec)
+    times = [t for t, _ in obs]
+    lost = set()
+    for d in clean.drops:
+        lost |= set([t for t in times if t > d.t_impact][:3])
+    m, _ = run([(t, None if t in lost else o) for t, o in obs], spec)
+    assert len(m.drops) == 3
+    for d, t in zip(m.drops, truth.drops, strict=True):
+        assert d.samples["rise"] < 4  # too few for a free parabola
+        assert d.rebound_cm == pytest.approx(corrected(t), rel=0.003)
+        assert "few frames" in " ".join(d.warnings)
+
+
 def test_a_hand_over_the_held_ball_does_not_make_it_look_small():
     """On a real session the held ball looked ~20% narrower than in flight (fingers
     over its edges), and a ball size taken over the last 2 s, mostly the hold before

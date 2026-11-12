@@ -35,7 +35,7 @@ from canister_monitor.video.detect import (
     check_area,
     sample_color,
 )
-from canister_monitor.video.measure import HoldEvent
+from canister_monitor.video.measure import DropEvent, HoldEvent
 from canister_monitor.video.pipeline import TOOL, Analyzer, VideoInfo, open_clip, times_path
 from canister_monitor.video.sources import FrameSource, check_rotation, rotated
 
@@ -533,6 +533,8 @@ class Run:
         for e in events:
             if isinstance(e, HoldEvent):
                 self.holds_seen = max(self.holds_seen, e.count)
+            elif isinstance(e, DropEvent):  # a drop before calibrating may take back a hold
+                self.holds_seen = len(self.analyzer.measurer.holds)
 
     def _maybe_preview(self, frame: np.ndarray, force: bool = False) -> None:
         now = time.monotonic()
@@ -679,6 +681,8 @@ class LiveRun(Run):
             holding = self.holds_seen > len(m.holds)  # the current hold is long enough
             failed = len(m.holds) >= want  # holds ended without making a calibration
             warn = "Those holds didn't line up. Start again from the floor." if failed else None
+            if warn is None and a.result.entries:
+                warn = "Not calibrated yet: drops so far assume a level camera."
             if holding and self.holds_seen % want == 0:
                 return {
                     "text": "Let go when ready",

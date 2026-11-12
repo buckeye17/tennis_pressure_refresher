@@ -731,15 +731,59 @@ def test_not_a_video(tmp_path):
 
 def observations(cam, spec, t0=0.0, fps=30.0):
     tr, truth = synth.build(spec, cam)
+    return seen(cam, tr, t0, fps), truth
+
+
+def seen(cam, tr, t0=0.0, fps=30.0):
+    """Exact observations of a synthetic trajectory, from time ``t0``."""
     out = []
     for i in range(int(tr.end * fps)):
         t = i / fps
         x, y, _ = tr.at(t)
         u, v, ppm = cam.project(x, y + synth.BALL_RADIUS_M)
         r = synth.BALL_RADIUS_M * ppm
-        seen = 0 <= u <= cam.width
-        out.append((t0 + t, Observation(t0 + t, u, v, 2 * r, 2 * r, v + r) if seen else None))
-    return out, truth
+        visible = 0 <= u <= cam.width
+        out.append((t0 + t, Observation(t0 + t, u, v, 2 * r, 2 * r, v + r) if visible else None))
+    return out
+
+
+def test_a_drop_before_the_holds_leaves_them_open():
+    """A try from the drop mark before the calibration holds (missed live, found on
+    the replay of the recording 20261111-195119) mustn't cost the session its
+    calibration: its release wasn't the floor hold, and the holds after it count."""
+    cam = synth.Camera.framing(H, 8.0)
+    out = cam.offscreen_x()
+    tr = synth.Trajectory()
+    tr.hold(out, 0.3, 0.3)
+    tr.move(0.0, H / 100, 1.2)
+    tr.hold(0.0, H / 100, 2.5)  # still long enough to be taken as a hold
+    tr.drop(0.75)
+    tr.hold(tr.x[-1], tr.y[-1], 0.3)
+    tr.move(out, 1.0, 1.0)
+    tr.hold(out, 1.0, 0.5)
+    stray = seen(cam, tr)
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    session, _ = observations(cam, spec, t0=stray[-1][0] + 1)
+
+    alone = Measurer(H, MID)
+    for t, o in session:
+        alone.feed(t, o)
+    alone.finish()
+
+    m = Measurer(H, MID)
+    for t, o in stray:
+        m.feed(t, o)
+    assert len(m.drops) == 1 and m.drops[0].method == "self"
+    assert m.taking_holds and m.holds == []  # the next hold is the floor
+    for t, o in session:
+        m.feed(t, o)
+    m.finish()
+    assert m.calibration is not None and m.calibration.method == "projective"
+    assert [h.row for h in m.holds] == [h.row for h in alone.holds]
+    assert len(m.drops) == 4
+    assert [d.rebound_cm for d in m.drops[1:]] == pytest.approx(
+        [d.rebound_cm for d in alone.drops], rel=1e-6
+    )
 
 
 def test_recalibrating_after_the_camera_moved():

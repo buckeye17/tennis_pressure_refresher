@@ -276,7 +276,6 @@ class Measurer:
         self.holds: list[Hold] = []
         self.calibration: Calibration | None = None
         self.drops: list[Drop] = []
-        self._holds_open = True  # still spells count as calibration holds
         self._next_seq = 0
         self._drop_cal: dict[int, Calibration | None] = {}  # seq -> calibration it used
         self._radii: deque[float] = deque(maxlen=120)
@@ -311,7 +310,6 @@ class Measurer:
         measured keep their calibration; later ones use the new holds."""
         self.holds.clear()
         self.calibration = None
-        self._holds_open = True
 
     def discard(self, seq: int) -> bool:
         """Forget a drop (live mode: Undo), so it doesn't sway the end-of-session refinement."""
@@ -460,7 +458,9 @@ class Measurer:
         self._hold_reported = False
 
     def _calibrating(self) -> bool:
-        return self.calibration is None and self._holds_open
+        # Once calibrated, a still ball is a release, not a hold. Until then (drops or
+        # not: see _uncalibrated_drop) it may be one.
+        return self.calibration is None
 
     def _try_calibrate(self, events: list) -> None:
         """Use the latest holds once they run floor -> (mid) -> drop height."""
@@ -567,8 +567,21 @@ class Measurer:
             self.drops.append(drop)
             self._drop_cal[drop.seq] = self.calibration
             self._next_seq += 1
-            self._holds_open = False  # once dropping, a still ball is a release, not a hold
+            if self.calibration is None:
+                self._uncalibrated_drop(drop)
             events.append(DropEvent(drop))
+
+    def _uncalibrated_drop(self, drop: Drop) -> None:
+        """A drop before the holds made a calibration leaves them open: the holds can
+        still be done afterwards. On a recording a stray drop can come first (a try
+        before the holds, missed live but found on the replay), and closing the holds
+        there would lose the session's calibration. If the drop's release was the
+        first hold of a set, it was no floor hold: it's taken back, so the next hold
+        counts as the floor. As the last of a set that didn't line up it stays, so
+        the set still counts as tried."""
+        want = 3 if self.mid_mark_cm is not None else 2
+        if self.holds and self.holds[-1].t_end >= drop.t_release and len(self.holds) % want == 1:
+            self.holds.pop()
 
     def _apex_points(
         self, rise: list[tuple[float, float]], band_row: float, t_top: float, radius: float

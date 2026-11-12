@@ -58,6 +58,47 @@ def test_following_does_not_slide_from_a_ball_onto_a_speck():
     assert last is None
 
 
+def blob(x: int, y: int, rx: int, ry: int) -> np.ndarray:
+    frame = np.full((1280, 720, 3), 120, np.uint8)
+    cv2.ellipse(frame, (x, y), (rx, ry), 0, 0, 360, synth.BALL_BGR, -1, cv2.LINE_AA)
+    return frame
+
+
+def picked_up(det: BallDetector, y: int) -> int:
+    """Carry a ball sideways at row ``y`` until the detector follows it; the frame count."""
+    for i in range(30):
+        if det.detect(disc(200 + 5 * i, y, BALL_R), i / 30) is not None and det.track:
+            return i + 1
+    raise AssertionError("never picked up")
+
+
+def test_following_keeps_the_ball_through_a_fast_bounce():
+    """Going on as it was, the ball would be a frame's fall below the floor; it's a
+    frame's rise above it. On a real session that lost some drops at random, and a
+    live session and its recording lost different ones."""
+    det = BallDetector()
+    n = picked_up(det, 200)
+    x = 200 + 5 * (n - 1)
+    fall = [230, 290, 380, 500, 650, 800, 950, 1100]  # 150 px a frame by the floor
+    rise = [960, 840, 730, 630]
+    for k, y in enumerate(fall + rise):
+        o = det.detect(disc(x, y, BALL_R), (n + k) / 30)
+        assert o is not None and o.cy == pytest.approx(y, abs=2), (k, y)
+
+
+def test_one_narrow_frame_does_not_lose_the_ball():
+    """Compressed video can lose a fast ball's blurred sides for a frame; the ball
+    after it, wide again (here wider, as at the floor), is still the ball."""
+    det = BallDetector()
+    n = picked_up(det, 200)
+    x = 200 + 5 * (n - 1)
+    shapes = [(BALL_R, BALL_R), (17, 22), (13, 30), (22, 22), (BALL_R, BALL_R)]
+    for k, (rx, ry) in enumerate(shapes):
+        y = 230 + 30 * k
+        o = det.detect(blob(x, y, rx, ry), (n + k) / 30)
+        assert o is not None and o.cy == pytest.approx(y, abs=2), (k, rx)
+
+
 def test_a_clicked_ball_may_be_small():
     det = BallDetector(start_point=(300.0, 400.0))
     seen = [det.detect(disc(300, 400, SPECK_R), i / 30) for i in range(10)]

@@ -3,7 +3,8 @@
 Optic-yellow pixels are grouped into blobs; blobs of the wrong shape are
 dropped. The ball is picked up as the first yellow blob that **moves**, so a
 yellow thing sitting still in the background is ignored, and from then on it
-is tracked as the blob nearest where it should be. Holding the ball still
+is tracked as the blob nearest where it should be (allowing for a bounce off
+the floor). Holding the ball still
 doesn't lose it: tracking only needs it to stay put or move continuously.
 Blobs too narrow to be a ball are ignored, unless the user clicked one.
 If the user drew a tracking area, blobs whose centre is outside it are ignored.
@@ -19,6 +20,7 @@ point is where the ball was at the middle of the exposure: the same measure
 works for a ball at rest and one moving fast.
 """
 
+import statistics
 from collections import deque
 from dataclasses import dataclass, replace
 
@@ -229,6 +231,15 @@ class BallDetector:
         return obs
 
     def _follow(self, cands: list[Candidate], t: float) -> Candidate | None:
+        """The blob nearest where the ball should be by now, going on as it was or,
+        if it was falling, bounced off the floor.
+
+        A bounce reverses the ball between two frames, so going on as it was puts
+        it a frame's fall below the floor while it's a frame's rise above it. That
+        was near the gate on every bounce of a real session (half to all of it), and
+        past it on some: the track never caught up, and the drop was lost. Which
+        ones came down to a pixel, so a live session and its recording lost
+        different drops."""
         last = self.track[-1]
         vx = vy = 0.0
         if len(self.track) >= 2:
@@ -237,17 +248,22 @@ class BallDetector:
             if dt > 0:
                 vx, vy = (last.cx - prev.cx) / dt, (last.cy - prev.cy) / dt
         dt = t - last.t
-        px, py = last.cx + vx * dt, last.cy + vy * dt
-        gate = 3 * last.width + (abs(vx) + abs(vy)) * dt
-        best, best_d = None, gate
-        for c in cands:
-            # Width barely changes (blur stretches blobs vertically, not sideways).
-            if not 0.6 <= c.obs.width / last.width <= 1.6:
-                continue
-            d = float(np.hypot(c.obs.cx - px, c.obs.cy - py))
-            if d < best_d:
-                best, best_d = c, d
-        return best
+        # Width barely changes (blur stretches blobs vertically, not sideways), but
+        # one frame can lose the ball's sides (compressed video halves the colour
+        # resolution; a fast ball's blurred sides go first), so a narrow frame
+        # mustn't become the reference. A wide one may: the ball at the floor is.
+        width = max(last.width, statistics.median(o.width for o in self.track))
+        gate = 3 * width + (abs(vx) + abs(vy)) * dt
+        fits = [c for c in cands if 0.6 <= c.obs.width / width <= 1.6]
+        aims = [(last.cx + vx * dt, last.cy + vy * dt)]
+        if vy > 0:  # rows grow downward: falling, so it may have bounced
+            aims.append((last.cx + vx * dt, last.cy - vy * dt))
+        for px, py in aims:
+            near = [(float(np.hypot(c.obs.cx - px, c.obs.cy - py)), i) for i, c in enumerate(fits)]
+            near = [(d, i) for d, i in near if d < gate]
+            if near:
+                return fits[min(near)[1]]
+        return None
 
     def _acquire(self, cands: list[Candidate], t: float, min_width: float) -> Candidate | None:
         if self.start_point is not None and cands:

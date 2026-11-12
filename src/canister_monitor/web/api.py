@@ -136,6 +136,7 @@ def _trend(mac: str, first_seen: float, now: float) -> dict:
         "levelled_since": t.levelled_since,
         "session_start": t.session_start,
         "session_source": t.session_source,
+        "step_ts": t.step_ts,
         "window_s": settings.window_s,
     }
 

@@ -121,6 +121,98 @@ def test_rising():
     assert trends.compute_trend(ts, ys, 2 * DAY, SETTINGS).status == trends.RISING
 
 
+# --- a hand on the valve ------------------------------------------------------------------
+
+# Canister 1 on 2026-11-11: pumped up, let down to maintenance pressure 7 h later, then
+# left alone. Seconds after the fill and compensated gauge psi at each change in the
+# reading; in between, the same reading came again every 200 s or so.
+RELEASED_AT = 25670.0
+LET_DOWN = [
+    (0, 33.01),
+    (314, 32.39),
+    (2538, 31.93),
+    (21525, 32.09),
+    (25670, 23.31),
+    (25679, 15.91),
+    (25688, 13.60),
+    (25697, 12.22),
+    (25706, 11.76),
+    (25724, 12.22),
+    (65286, 12.31),
+    (71307, 12.41),
+    (71909, 12.31),
+]
+
+
+def held(changes, until, every=200.0):
+    """Readings from (seconds, psi) changes, each repeated ``every`` seconds until the next."""
+    ts, ys = [], []
+    for (t, psi), nxt in zip(changes, [*[t for t, _ in changes[1:]], until], strict=True):
+        while t < nxt:
+            ts.append(float(t))
+            ys.append(psi_to_kpa(psi))
+            t += every
+    return ts, ys
+
+
+def test_last_step_is_the_end_of_a_sudden_change():
+    ts, ys = held(LET_DOWN, RELEASED_AT + 13 * HOUR)
+    step = trends.last_step(ts, ys)
+    # The last reading within 15 min of one from before or during the release.
+    assert 0 < step - RELEASED_AT <= trends.STEP_WITHIN_S + 60
+    assert trends.last_step(ts[:100], ys[:100]) is None  # before it: settling after the fill
+    assert trends.last_step([], []) is None
+
+
+def test_last_step_ignores_leaks_sensor_steps_and_gaps():
+    quantum = psi_to_kpa(0.46)
+    rate = psi_to_kpa(-5.0) / DAY  # a bad leak, read in the sensors' 0.46 psi steps
+    ts, ys = series(lambda t: round((200 + rate * t) / quantum) * quantum, 0, 2 * DAY)
+    assert trends.last_step(ts, ys) is None
+    # Half an hour between readings: a release or a fast leak, there's no telling.
+    assert trends.last_step([0.0, 1800.0, 3600.0], [200.0, 80.0, 80.0]) is None
+
+
+def test_letting_a_canister_down_is_not_a_fall():
+    # 13 h after the release the dashboard said "Still dropping, 31 psi/day".
+    now = RELEASED_AT + 13.2 * HOUR
+    ts, ys = held(LET_DOWN, now)
+    whole = trends.window_slope(ts, ys, now, SETTINGS.window_s)
+    assert whole == pytest.approx(psi_to_kpa(-31), rel=0.1)  # what counting the step gives
+
+    t = trends.compute_trend(ts, ys, now, SETTINGS, session_start=0.0)
+    assert t.status == trends.LEVELLING
+    assert abs(t.slope_kpa_per_day) < SETTINGS.threshold_kpa_per_day
+    assert 0 < t.step_ts - RELEASED_AT <= trends.STEP_WITHIN_S + 60
+
+    # Too soon after it to say anything, and the trend says when it started again.
+    soon = RELEASED_AT + 6 * HOUR
+    early = trends.compute_trend(*held(LET_DOWN[:10], soon), soon, SETTINGS, session_start=0.0)
+    assert early.status == trends.INSUFFICIENT
+    assert early.step_ts == t.step_ts
+
+    # Left alone for a day and a half, it has levelled off.
+    later = RELEASED_AT + 36 * HOUR
+    settled = trends.compute_trend(*held(LET_DOWN, later), later, SETTINGS, session_start=0.0)
+    assert settled.status == trends.LEVELLED
+
+
+def test_topping_up_is_not_a_rise():
+    top_up = 2 * DAY
+    changes = [(0, 12.2), (top_up, 21.0), (top_up + 9, 30.4), (top_up + 18, 30.0)]
+    now = top_up + 13 * HOUR
+    t = trends.compute_trend(*held(changes, now), now, SETTINGS)
+    assert t.status == trends.LEVELLING
+    assert t.slope_kpa_per_day == pytest.approx(0.0, abs=1e-6)
+    soon = top_up + 3 * HOUR
+    assert trends.compute_trend(*held(changes, soon), soon, SETTINGS).status == trends.INSUFFICIENT
+
+
+def test_no_step_leaves_the_trend_as_it_was():
+    ts, ys = series(lambda t: 150.0, 0, 3 * DAY)
+    assert trends.compute_trend(ts, ys, 3 * DAY, SETTINGS).step_ts is None
+
+
 def test_settings_from_config_converts_units():
     s = trends.TrendSettings.from_config(
         TrendsConfig(window_hours=6, plateau_threshold_psi_per_day=1)

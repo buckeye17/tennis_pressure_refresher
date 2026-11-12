@@ -377,6 +377,7 @@ def test_canister_trends(tmp_path):
     assert flat["status"] == "levelled_off"
     assert abs(flat["slope_kpa_per_day"]) < 0.01
     assert flat["session_start"] == start and flat["session_source"] == "fill"
+    assert flat["step_ts"] is None  # nobody touched the valve
 
     leak = by_mac[MAC2]["trend"]
     assert leak["status"] == "leak_suspected"

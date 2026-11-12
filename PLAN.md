@@ -236,6 +236,8 @@ Compensation must use **absolute** pressure and **Kelvin**. If `temp_c` is missi
 
 **Trend (Phase 7):** slope of compensated gauge pressure over a trailing window (default **24 h**) via least-squares, reported in psi/day. "Plateau" when |slope| stays below a configurable threshold (default **0.3 psi/day**) for a configurable duration (default 12 h). Interpretation: as air diffuses into the balls, canister pressure declines and levels off; a decline that never levels off may indicate a leak — flagged when still falling `leak_hint_after_hours` (default **96 h**) after the latest `fill` event (or the first reading if there is none).
 
+Letting a canister down to maintenance pressure, or topping it up, is a step and not a trend, so the fit starts again after one: only readings after the last sudden change count. A reading is part of a sudden change if it differs by 2 psi or more from one up to 15 min before it (nearly 200 psi/day, against the sensors' 0.46 psi steps); readings further apart can't tell a release from a fast leak and are never a step. Found on the first real session: lowered from 31.5 to 11.9 psi in a minute, the canister read "still dropping, 31 psi/day" for the next 24 h while it sat flat. For half a window after a step the status is `insufficient_data`, and the card says when the pressure changed.
+
 Why not the original 6 h / 0.2 psi/day: with the B-Qtech sensors' 0.46 psi steps, the 6 h slope of a canister that has truly levelled off wobbles by up to ±1.3 psi/day, so it could never stay under 0.2 for 12 h. Measured on 7 simulated days: max |slope| on flat canisters was ±1.3 (6 h), ±0.4 (12 h), ±0.2 (24 h), while the 1.5 psi/day leak read −1.4 to −1.6 at 24 h. One healthy simulated canister was still at −0.43 psi/day on day 3, hence the 96 h leak hint. All four are `[trends]` settings; revisit with real data.
 
 Statuses: `insufficient_data` (fewer than 6 readings, or they span less than half the window), `falling`, `rising`, `levelling_off` (flat for less than `plateau_hours`), `levelled_off`, `leak_suspected`.
@@ -961,7 +963,7 @@ Tasks: `trends.py` (slope, plateau detection per §6), trend shown on cards ("�
 
 Acceptance: simulator's leaking sensor is flagged; plateaued sensors are labeled as such; unit tests for slope math.
 
-As built: `trends.py` is pure (no DB/web). `/api/canisters` returns `trend: {status, slope_kpa_per_day, levelled_since, session_start, session_source, window_s}`. Cards show e.g. "▼ 0.83 psi/day · still dropping", "✓ Levelled off", or (red) "still dropping 4.5 days after fill — check for a leak", plus "Filled N days ago". The chart's **Since fill** range starts at the most recent fill note. Verified on 20 simulator seeds × 7 days: 60/60 healthy canisters levelled off, 20/20 leaks flagged.
+As built: `trends.py` is pure (no DB/web). `/api/canisters` returns `trend: {status, slope_kpa_per_day, levelled_since, session_start, session_source, step_ts, window_s}`. Cards show e.g. "▼ 0.83 psi/day · still dropping", "✓ Levelled off", or (red) "still dropping 4.5 days after fill — check for a leak", plus "Filled N days ago". The chart's **Since fill** range starts at the most recent fill note. Verified on 20 simulator seeds × 7 days: 60/60 healthy canisters levelled off, 20/20 leaks flagged.
 
 ### Phase 8 — Ball bounce predictions *(in progress)*
 

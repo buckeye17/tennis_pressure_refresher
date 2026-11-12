@@ -169,8 +169,13 @@
     const after = trend.session_source === "fill" ? "after fill" : "since first reading";
     const age = trend.session_start == null ? "" : fmtDays(serverNow() - trend.session_start);
     switch (trend.status) {
-      case "insufficient_data":
-        return { text: `The trend needs about ${Math.round(trend.window_s / 7200)} h of readings`, mod: "" };
+      case "insufficient_data": {
+        const need = `about ${Math.round(trend.window_s / 7200)} h of readings`;
+        // After a release or a top-up the trend starts again from there.
+        return trend.step_ts == null
+          ? { text: `The trend needs ${need}`, mod: "" }
+          : { text: `Pressure changed ${fmtDays(serverNow() - trend.step_ts)} ago. The trend needs ${need} since then.`, mod: "" };
+      }
       case "falling":
         return { text: `▼ Still dropping, ${rate}`, mod: "" };
       case "rising":

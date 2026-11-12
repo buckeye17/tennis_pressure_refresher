@@ -1514,7 +1514,8 @@
       case "no_pressure":
         return {
           mod: "act", head: `No fresh reading from ${can}.`,
-          body: [`${est}, if it stayed at its last reading. Check the sensor is on the canister: it goes quiet at 0 ${state.units}.`],
+          body: [`${est}, if it stayed at its last reading. Check the sensor is on the canister: it goes quiet at 0 ${state.units}.`,
+            "If the balls are out and the app missed the canister being opened, end the session and enter when they came out."],
         };
       case "out": {
         const losing = a.drift_per_day < 0 ? `losing about ${(-a.drift_per_day * 100).toFixed(1)}% a day` : null;
@@ -1779,6 +1780,11 @@
     f.dataset.session = s ? s.id : "";
     $("#session-title").textContent =
       `${ending ? "End charge session" : s ? "Edit charge session" : "Start charge session"}: ${batchName(b)}`;
+    const itself = "ends by itself when the canister is opened and reads 0";
+    $("#session-hint").textContent = ending
+      ? `A session ${itself}. If the app missed that, enter when the balls came out: any time since they went in.`
+      : s ? `A session is the balls' whole stay in a canister, and ${itself}. Change the times here if they're wrong.`
+        : `Start a session when the balls go into a canister and it's pumped up. It ${itself}. Lowering it to maintenance pressure isn't an end: the app sees that from the readings.`;
     const macs = state.canisters.map((c) => c.mac);
     if (s?.mac && !macs.includes(s.mac)) macs.push(s.mac);
     const select = $("#session-mac");

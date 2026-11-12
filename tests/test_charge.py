@@ -364,6 +364,52 @@ def test_sessions_and_plays_round_trip(conn):
     assert db.list_sessions(conn) == [] and db.list_plays(conn) == []
 
 
+OPEN_ABS = ATM + charge.OPEN_KPA
+
+
+def store(conn, ts, psi, mac=MAC1):
+    db.insert_reading(conn, Reading(ts, mac, ATM + psi_to_kpa(psi), 20.0, decoder="x"), None)
+
+
+def test_an_empty_reading_ends_the_sessions_running_in_that_canister(conn):
+    batch, other = new_batch(conn), new_batch(conn, model="Tour")
+    done = db.insert_session(conn, batch, 50.0, MAC1, end_ts=90.0)
+    running = db.insert_session(conn, batch, 100.0, MAC1)
+    shared = db.insert_session(conn, other, 150.0, MAC1)
+    elsewhere = db.insert_session(conn, other, 10.0, "30:94:A8:22:22:22", end_ts=20.0)
+    no_sensor = db.insert_session(conn, new_batch(conn, model="Fort"), 100.0)
+    for ts in (120.0, 200.0, 300.0):
+        store(conn, ts, 30.0)
+    store(conn, 400.0, 0.0)
+
+    assert db.end_sessions_at(conn, MAC1, 400.0, OPEN_ABS) == [running, shared]
+    assert [db.get_session(conn, s).end_ts for s in (running, shared)] == [400.0, 400.0]
+    assert db.get_session(conn, done).end_ts == 90.0  # already over: left alone
+    assert db.get_session(conn, elsewhere).end_ts == 20.0
+    assert db.get_session(conn, no_sensor).end_ts is None
+    assert db.end_sessions_at(conn, MAC1, 410.0, OPEN_ABS) == []  # the sensor repeats itself
+
+
+def test_an_empty_reading_before_the_canister_is_pumped_up_ends_nothing(conn):
+    batch = new_batch(conn)
+    store(conn, 50.0, 30.0)  # the stay before this one
+    store(conn, 90.0, 0.0)
+    session = db.insert_session(conn, batch, 100.0, MAC1)
+    store(conn, 110.0, 0.0)  # balls in, lid on, not pumped up yet
+    assert db.end_sessions_at(conn, MAC1, 110.0, OPEN_ABS) == []
+    assert db.session_opened_ts(conn, MAC1, 100.0, OPEN_ABS) is None
+
+    store(conn, 120.0, 30.0)
+    store(conn, 500.0, 12.0)  # lowered to maintenance pressure: not an end
+    assert db.session_opened_ts(conn, MAC1, 100.0, OPEN_ABS) is None
+    store(conn, 600.0, 0.9)  # under 1 psi is open
+    store(conn, 610.0, 0.0)
+    assert db.session_opened_ts(conn, MAC1, 100.0, OPEN_ABS) == 600.0
+    assert db.end_sessions_at(conn, MAC1, 600.0, OPEN_ABS) == [session]
+    # A reading from before a session started is never its end.
+    assert db.session_opened_ts(conn, MAC1, 605.0, OPEN_ABS) is None
+
+
 def test_batch_locations_follow_sessions_and_notes(conn):
     a, b, c = new_batch(conn), new_batch(conn), new_batch(conn)
     db.insert_session(conn, a, 100.0, MAC1, end_ts=200.0)
@@ -696,6 +742,44 @@ def test_session_validation(seeded):
     # Ending the running one now (no time given means now).
     resp = client.patch(f"{url}/{running['id']}", json={"end_ts": NOW})
     assert resp.get_json()["end_ts"] == NOW
+
+
+def test_a_session_entered_after_the_canister_was_opened_comes_back_ended(seeded, app):
+    client, setup, batch = seeded
+    url = "/api/charge/sessions"
+    add_test(client, batch, setup, NOW - 9 * DAY, 110.0, "new")
+    add_readings(app, NOW - 6 * DAY, NOW - 4 * DAY, 30.0)
+    opened = NOW - 4 * DAY + 60
+    add_readings(app, opened, opened + 30, 0.0, every=10.0)  # opened, then the sensor goes quiet
+    add_readings(app, NOW - 2 * DAY, NOW - 600, 30.0)  # pumped up again, still in
+
+    first = post(client, url, {"batch_id": batch, "mac": MAC1, "start_ts": NOW - 6 * DAY})
+    assert first["end_ts"] == opened
+    # So the next stay doesn't overlap it, and is still running.
+    second = post(client, url, {"batch_id": batch, "mac": MAC1, "start_ts": NOW - 2 * DAY})
+    assert second["end_ts"] is None
+    _, b = overview(client, batch)
+    assert b["in_canister"] and [s["end_ts"] for s in b["sessions"]] == [opened, None]
+
+    # The app missed an opening: the end can be set to any time since the balls went in.
+    patch = f"{url}/{second['id']}"
+    came_out = NOW - 5 * HOUR
+    assert client.patch(patch, json={"end_ts": came_out}).get_json()["end_ts"] == came_out
+    assert not overview(client, batch)[1]["in_canister"]
+    assert "end after" in error_of(client.patch(patch, json={"end_ts": NOW - 3 * DAY}))
+
+    # Reopened by hand, the first stays open: old readings aren't looked at again.
+    assert "overlaps" in error_of(client.patch(f"{url}/{first['id']}", json={"end_ts": None}), 409)
+    client.delete(patch)
+    reopened = client.patch(f"{url}/{first['id']}", json={"end_ts": None, "note": "still in"})
+    assert reopened.get_json()["end_ts"] is None
+    # Moving its start checks the readings again; a note alone doesn't.
+    assert client.patch(f"{url}/{first['id']}", json={"note": "x"}).get_json()["end_ts"] is None
+    moved = client.patch(f"{url}/{first['id']}", json={"start_ts": NOW - 5 * DAY})
+    assert moved.get_json()["end_ts"] == opened
+    # A session with no sensor, or one starting after the opening, is left running.
+    client.delete(f"{url}/{first['id']}")
+    assert post(client, url, {"batch_id": batch, "start_ts": NOW - 6 * DAY})["end_ts"] is None
 
 
 def test_play_validation(seeded):

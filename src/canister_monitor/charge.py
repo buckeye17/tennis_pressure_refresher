@@ -30,6 +30,9 @@ DAY_S = 86_400.0
 # A session's pressure counts as "at maintenance" within this much of it: the
 # sensors are only good to a psi or two.
 MARGIN_KPA = psi_to_kpa(2.0)
+# A canister reading this or less has been opened, which ends the sessions in it:
+# the sensors read 0 at ambient pressure and step by 0.46 psi.
+OPEN_KPA = psi_to_kpa(1.0)
 RAISE_BELOW = 0.02  # at maintenance pressure, suggest charging once r is this far under 1
 PAIR_SD = 0.012  # error of one test-to-test change in r (about 1.5 cm on a 110 cm rebound)
 PRIOR_REL_SD = 0.5  # how far the configured per_kpa is trusted, as a share of itself

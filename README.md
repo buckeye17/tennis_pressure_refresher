@@ -108,7 +108,12 @@ them there for as long as it takes until you next play.
 3. When it reads *Lower Canister 1 to 14.0 psi now*, bleed the canister down to the maintenance
    pressure and leave the balls in. That is still the same session: the app sees the lower
    pressure in the readings and reads *Holding at maintenance pressure*.
-4. **End charge session** when the balls come out to play, then **Log play** with the hours.
+4. When the balls come out to play, the session ends by itself: opening the canister drops its
+   pressure to 0, and the app ends the session at that reading. Then **Log play** with the hours.
+
+If the Pi wasn't listening when the canister was opened (it was off, or out of the sensor's
+range), the session stays open and the card reads *No fresh reading*. Press **End charge
+session** and enter when the balls came out: any time since they went in.
 
 A batch's page on the **Balls** tab charts its bounce as a share of new: dots for tests, a line
 for the estimate between them, shading for time in a canister. Under it, switch between its

@@ -365,16 +365,29 @@ def _check_times(batch_id: int, start: float, end: float | None, exclude: int | 
             )
 
 
+def _opened_ts(mac: str | None, start: float) -> float | None:
+    """The collector ends a running session when its canister reads empty. A session
+    entered or moved after the fact may have that reading behind it already: this is
+    when, going by the readings stored, or None."""
+    if mac is None:
+        return None
+    open_kpa_abs = _ctx()["config"].site.atmospheric_kpa + charge.OPEN_KPA
+    return db.session_opened_ts(get_db(), mac, start, open_kpa_abs)
+
+
 @charge_api.post("/api/charge/sessions")
 def create_session():
     """Put a batch in a canister. ``start_ts`` defaults to now; give ``end_ts`` too
-    to record a session that is already over."""
+    to record a session that is already over. Without one, a session whose canister
+    has read empty since it was pumped up comes back ended at that reading."""
     body = _body({"batch_id", "mac", "start_ts", "end_ts", "note"}, {"batch_id"})
     batch = _batch(body["batch_id"])
     start = _past(body.get("start_ts"), "start_ts")
     end = None if body.get("end_ts") is None else _past(body["end_ts"], "end_ts")
     mac = _mac(body.get("mac"))
     note = _text(body.get("note"), "note", NOTE_MAX, optional=True)
+    if end is None:
+        end = _opened_ts(mac, start)
     _check_times(batch.id, start, end, None)
     session_id = db.insert_session(get_db(), batch.id, start, mac=mac, end_ts=end, note=note)
     return jsonify(db.get_session(get_db(), session_id).__dict__), 201
@@ -382,7 +395,9 @@ def create_session():
 
 @charge_api.patch("/api/charge/sessions/<int:session_id>")
 def update_session(session_id: int):
-    """Change a session. ``end_ts`` ends it (the balls came out); null reopens it."""
+    """Change a session. ``end_ts`` ends it (the balls came out) at any time in the
+    past; null reopens it, and it then stays open until its canister next reads
+    empty. Moving a running session's start or canister checks the readings again."""
     current = db.get_session(get_db(), session_id)
     if current is None:
         raise ApiError(f"session {session_id} not found", 404)
@@ -397,6 +412,11 @@ def update_session(session_id: int):
     if "note" in body:
         fields["note"] = _text(body["note"], "note", NOTE_MAX, optional=True)
     merged = {**current.__dict__, **fields}
+    moved = (merged["mac"], merged["start_ts"]) != (current.mac, current.start_ts)
+    if moved and merged["end_ts"] is None and "end_ts" not in body:
+        opened = _opened_ts(merged["mac"], merged["start_ts"])
+        if opened is not None:
+            merged["end_ts"] = fields["end_ts"] = opened
     _check_times(current.batch_id, merged["start_ts"], merged["end_ts"], session_id)
     db.update_session(get_db(), session_id, **fields)
     return jsonify(db.get_session(get_db(), session_id).__dict__)

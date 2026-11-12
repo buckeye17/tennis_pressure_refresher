@@ -240,7 +240,7 @@
   <dialog id="session-dialog" aria-labelledby="session-title">
     <form id="session-form" class="dialog-form" novalidate>
       <h2 id="session-title">Charge session</h2>
-      <p class="hint">A session is the balls' whole stay in a canister: start it when they go in and it's pumped up, end it when they come out to play. Lowering it to maintenance pressure isn't an end: the app sees that from the readings.</p>
+      <p class="hint" id="session-hint"></p>
       <div class="fields">
         <label>Canister <select id="session-mac"></select></label>
         <label>Went in (blank = now) <input id="session-start" type="datetime-local"></label>

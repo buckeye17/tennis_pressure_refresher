@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Protocol
 
 from canister_monitor import db
+from canister_monitor.charge import OPEN_KPA
 from canister_monitor.compensation import gauge_kpa, kpa_to_psi
 from canister_monitor.config import Config, ConfigError, load_config
 from canister_monitor.decoders import Advert, Decoder, Reading, find_decoder, get_decoders
@@ -101,7 +102,16 @@ class Pipeline:
             db.insert_reading(self.conn, reading, self.policy.last_raw_id(adv.mac))
             self.policy.reading_stored(reading)
             self._log_reading(reading, canister, adv.rssi)
+            self._end_sessions_if_opened(reading, canister)
         return reading
+
+    def _end_sessions_if_opened(self, reading: Reading, canister: str | None) -> None:
+        """A canister that reads empty has been opened: the balls in it are out."""
+        open_kpa_abs = self.config.site.atmospheric_kpa + OPEN_KPA
+        if reading.pressure_kpa_abs > open_kpa_abs:
+            return
+        for session_id in db.end_sessions_at(self.conn, reading.mac, reading.ts, open_kpa_abs):
+            log.info("%s reads empty: ended charge session %d", canister or reading.mac, session_id)
 
     def flush_seen(self) -> None:
         """Write batched sensors.last_seen / last_rssi updates."""

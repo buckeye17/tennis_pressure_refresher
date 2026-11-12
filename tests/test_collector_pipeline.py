@@ -16,6 +16,8 @@ FBB0_UUID = "0000fbb0-0000-1000-8000-00805f9b34fb"
 P_45 = bytes.fromhex("8F6344000A2A008028111111A89430")  # 45.1 psi, 13 C
 P_33 = bytes.fromhex("8F4944000A8200A328111111A89430")  # 33.3 psi, 13 C
 
+P_0 = bytes.fromhex("8F0044010A8200A328111111A89430")  # 0 psi, 13 C, status "no pressure"
+
 CONFIG = parse_config(
     {
         "collector": {"raw_heartbeat_minutes": 10, "reading_heartbeat_minutes": 1},
@@ -119,6 +121,32 @@ def test_unassigned_sensor_is_recorded(conn):
     p.flush_seen()
     assert rows(conn, "SELECT mac, canister FROM sensors") == [("30:94:A8:22:22:22", None)]
     assert rows(conn, "SELECT COUNT(*) FROM readings") == [(1,)]
+
+
+def test_opening_a_canister_ends_the_session_in_it(conn, caplog):
+    caplog.set_level("INFO", logger="canister_monitor.collector")
+    batch = db.insert_batch(
+        conn, brand="Dunlop", model="ATP", opened_ts=0.0, n_balls=9, sample_size=9
+    )
+    p = make_pipeline(conn)
+    p.handle(sensor_adv(900.0, P_0))  # open before the balls go in
+    session = db.insert_session(conn, batch, 1000.0, MAC)
+    p.handle(sensor_adv(1005.0, P_0))  # lid on, not pumped up yet: not an end
+    assert db.get_session(conn, session).end_ts is None
+    p.handle(sensor_adv(1100.0, P_45))
+    p.handle(sensor_adv(5000.0, P_33))  # lowered: still the same session
+    assert db.get_session(conn, session).end_ts is None
+
+    p.handle(sensor_adv(9000.0, P_0))  # opened: the balls are out
+    p.handle(sensor_adv(9009.0, P_0))
+    assert db.get_session(conn, session).end_ts == 9000.0
+    ended = [r.getMessage() for r in caplog.records if "ended" in r.getMessage()]
+    assert ended == [f"Canister 1 reads empty: ended charge session {session}"]
+
+    # The next stay isn't touched by the first one's readings.
+    again = db.insert_session(conn, batch, 9500.0, MAC)
+    p.handle(sensor_adv(9600.0, P_45))
+    assert db.get_session(conn, again).end_ts is None
 
 
 def test_seen_batch_keeps_newest(conn):

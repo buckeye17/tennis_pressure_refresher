@@ -469,6 +469,7 @@ ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark bet
 
 **What is recorded** (tables in §7):
 - A **charge session** is a batch's whole stay in a canister: from going in and pumping up, through the lowering to maintenance pressure, to coming out to play. It has a canister (its sensor's MAC), a start, an end (empty while the balls are in), and a note. Lowering the pressure isn't an end; the readings show it. A batch's sessions can't overlap, and one can be entered after the fact.
+- **A session ends by itself when its canister is opened.** The sensors read 0 at ambient pressure, send a few such readings, then go quiet. When the collector stores a reading of 1 psi or less (`charge.OPEN_KPA`) it ends every session running in that canister at that reading's time (`db.end_sessions_at`). A canister also reads 0 before it is pumped up, so the reading only counts for a session that has had a pressurized reading since it started. A session entered or moved after the fact is checked against the readings already stored (`db.session_opened_ts`: the first empty reading after the first pressurized one) and comes back ended. If the collector missed the opening (the Pi was off or out of range), the session stays open and reads `stale`; the user ends it by hand with the time the balls came out, which the dialog has always taken. A session reopened by hand stays open until the canister next reads empty: old readings are not looked at again.
 - **Play**: when, and optionally for how many hours.
 - Sessions replace the batch picker on `balls_added` / `balls_removed` notes as the record of where a batch is. Old notes that name a batch still count. A session's start counts as a fill of its canister (trends, the Since fill range) and ends a leak test there.
 
@@ -778,8 +779,8 @@ Required so agents can develop and test **without BLE hardware**.
 | `GET /healthz` | `{"ok": true, "db": "...", "newest_reading_age_s": N}` |
 
 | `GET /api/charge` | Charge sessions (§6.4), everything at once. `settings` (maintenance and charge pressure and the margin in kPa, like-new tolerance) and one entry per batch: its `reference`, `in_canister`, `mac`, current `pressure_kpa`, `flags` (`no_sensor`, `no_readings`, `stale`, `play_hours_missing`), the estimated `ratio` now with its `ratio_range`, `advice` (`status`, `hold_s`, `charge_s`, their ranges, `drift_per_day`), `tests` with their ratios, `sessions` (each with its pressure summary, the tests before and after, and the estimate at its start and end), `plays`, the `estimate` line for the chart, `totals` and the fitted `model` |
-| `POST /api/charge/sessions` | Start a session `{batch_id, mac?, start_ts?, end_ts?, note?}`; `start_ts` defaults to now. 409 if it overlaps another of the batch's sessions |
-| `PATCH /api/charge/sessions/<id>` | Change `mac`, `start_ts`, `end_ts` or `note`. An `end_ts` ends the session; null reopens it |
+| `POST /api/charge/sessions` | Start a session `{batch_id, mac?, start_ts?, end_ts?, note?}`; `start_ts` defaults to now. With no `end_ts`, a session whose canister has read empty since being pumped up comes back ended at that reading. 409 if it overlaps another of the batch's sessions |
+| `PATCH /api/charge/sessions/<id>` | Change `mac`, `start_ts`, `end_ts` or `note`. An `end_ts` ends the session at any past time; null reopens it. Moving a running session's start or canister checks the stored readings for an opening again |
 | `DELETE /api/charge/sessions/<id>` | Remove a session (readings are kept) |
 | `POST /api/charge/plays`, `DELETE /api/charge/plays/<id>` | Log play `{batch_id, ts?, hours?, note?}`, or remove it |
 

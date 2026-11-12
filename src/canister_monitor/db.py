@@ -841,6 +841,50 @@ def delete_session(conn: sqlite3.Connection, session_id: int) -> bool:
         return conn.execute("DELETE FROM charge_sessions WHERE id = ?", (session_id,)).rowcount > 0
 
 
+# A session ends by itself when its canister is opened: the pressure reads empty
+# (``open_kpa_abs`` or less, absolute) after having been up. A canister also reads
+# empty before it is pumped up, so an empty reading only counts after a
+# pressurized one from the session's start on.
+
+
+def end_sessions_at(
+    conn: sqlite3.Connection, mac: str, ts: float, open_kpa_abs: float
+) -> list[int]:
+    """The canister read empty at ``ts``: end the sessions running in it then.
+    Returns the ids of the sessions ended."""
+    with conn:
+        ids = [
+            r[0]
+            for r in conn.execute(
+                """SELECT s.id FROM charge_sessions s
+                   WHERE s.mac = :mac AND s.end_ts IS NULL AND s.start_ts < :ts
+                     AND EXISTS (SELECT 1 FROM readings r
+                                 WHERE r.mac = :mac AND r.ts >= s.start_ts AND r.ts < :ts
+                                   AND r.pressure_kpa_abs > :open)""",
+                {"mac": mac, "ts": ts, "open": open_kpa_abs},
+            )
+        ]
+        conn.executemany(
+            "UPDATE charge_sessions SET end_ts = ? WHERE id = ?", [(ts, i) for i in ids]
+        )
+    return ids
+
+
+def session_opened_ts(
+    conn: sqlite3.Connection, mac: str, start_ts: float, open_kpa_abs: float
+) -> float | None:
+    """When a canister was opened during a session that started at ``start_ts``, going
+    by the readings already stored: the first empty one after the first pressurized
+    one. None if it wasn't. For a session entered after the fact."""
+    return conn.execute(
+        """SELECT MIN(ts) FROM readings
+           WHERE mac = :mac AND pressure_kpa_abs <= :open
+             AND ts > (SELECT MIN(ts) FROM readings
+                       WHERE mac = :mac AND ts >= :start AND pressure_kpa_abs > :open)""",
+        {"mac": mac, "start": start_ts, "open": open_kpa_abs},
+    ).fetchone()[0]
+
+
 @dataclass(frozen=True)
 class Play:
     """A batch was played with. ``hours`` is None if it wasn't noted."""

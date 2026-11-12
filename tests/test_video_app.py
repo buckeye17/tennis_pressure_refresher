@@ -195,7 +195,12 @@ def review_of(heights: list[float]) -> Review:
         (
             i // 3 + 1,
             SimpleNamespace(
-                seq=i, rebound_cm=h, release_cm=200.66, method="projective", warnings=()
+                seq=i,
+                rebound_cm=h,
+                release_cm=200.66,
+                method="projective",
+                side_cm=None,
+                warnings=(),
             ),
         )
         for i, h in enumerate(heights)

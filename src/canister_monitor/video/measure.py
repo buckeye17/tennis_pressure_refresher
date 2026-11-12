@@ -68,11 +68,17 @@ class Settings:
     # top of the flight by 0.1-0.7 radii rms on drops whose heights checked out to
     # ~0.5 cm, so only a wrong track (a hand, another object) goes past this.
     apex_warn_r: float = 0.8
-    width_warn: float = 0.15  # ball width off what the scale predicts by more than this
+    # Ball width at the top of the flight (the apex fit's frames: no hand, little blur)
+    # off what the scale predicts by more than this.
+    width_warn: float = 0.15
     # ... or wider by more than this with a 3-hold calibration: a camera looking up or
     # down at the drop shortens heights in the picture but not widths, so the ball
     # always looks wider than the vertical scale predicts (1 / cos of the angle).
     width_warn_wide: float = 0.5
+    # The ball at the top this far to the side of the line its fall followed: it bounced
+    # off at an angle. Sideways in the picture barely moves the reading, but a bounce in
+    # a random direction also goes toward or away from the camera, which does.
+    side_warn_cm: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -152,6 +158,10 @@ class Drop:
     warnings: tuple[str, ...]
     low_row: float  # the lowest point seen at the bounce
     low_gap_s: float  # the longest frame interval next to it
+    # How far the ball was at the top from the line its fall followed, in cm, + to the
+    # right in the picture (None if too few frames). The fall's own line takes out
+    # camera roll.
+    side_cm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +232,35 @@ def _floor_cm(
     return min(max(0.0, low - reach), low)
 
 
+def _side_cm(
+    fall: list[tuple[float, float, float]],
+    top: list[tuple[float, float, float, float]],
+    t_apex: float,
+    width: float,
+) -> float | None:
+    """How far the ball at its apex is from the line its fall followed, in cm, + to
+    the right in the picture. Fall points are (bottom row, centre x, width), top points
+    (t, bottom row, centre x, width), in pixels.
+
+    A ball let go from rest falls straight down, so its fall traces the vertical in
+    the picture, camera roll included (4.7 degrees on a real session, which made every
+    fall look 15 cm slanted). In flight nothing pushes it sideways, so its offset from
+    that line grows in step with time: a line through the top frames' offsets, read at
+    the apex (the frames around it are often lopsided, cut short by the catch). Pixels
+    become cm by the ball's own width at the top, the sideways scale where the ball
+    is. None without a fall long enough to give its line."""
+    if len(fall) < 4 or len(top) < 2:
+        return None
+    rows = [r for r, _, _ in fall]
+    if max(rows) - min(rows) < 4 * width:
+        return None
+    slope, at0 = np.polyfit(rows, [x for _, x, _ in fall], 1)
+    ts = [t - t_apex for t, _, _, _ in top]
+    offs = [x - (at0 + slope * r) for _, r, x, _ in top]
+    off = np.polyfit(ts, offs, 1)[1] if max(ts) > min(ts) else statistics.median(offs)
+    return float(off) * BALL_DIAMETER_CM / width
+
+
 class Measurer:
     """Feed observations in time order; collect events. See the module docstring."""
 
@@ -249,6 +288,7 @@ class Measurer:
         self._hold_reported = False
         self._state = "idle"
         self._samples: list[tuple[float, float]] = []  # (t, bottom row) this drop
+        self._track: list[tuple[float, float]] = []  # (centre x, width), one per sample
         self._rest: tuple[float, float] | None = None  # (t, row) where it last sat still
         self._extreme: tuple[float, float] | None = None  # (t, row) lowest / highest point
         self._impact: tuple[float, float] | None = None
@@ -292,7 +332,7 @@ class Measurer:
         self._last_t = t
         still = self._update_still(obs, radius)
         self._update_holds(t, still, events)
-        self._step_drop(t, obs.bottom, radius, still, events)
+        self._step_drop(t, obs, radius, still, events)
         return events
 
     def finish(self) -> list:
@@ -455,12 +495,16 @@ class Measurer:
     def _reset_drop(self, state: str = "idle") -> None:
         self._state = state
         self._samples = []
+        self._track = []
         self._extreme = None
         self._impact = None
         self._past_apex = 0
 
-    def _step_drop(self, t: float, row: float, radius: float, still: bool, events: list) -> None:
+    def _step_drop(
+        self, t: float, obs: Observation, radius: float, still: bool, events: list
+    ) -> None:
         s = self.s
+        row = obs.bottom
         if self._state in ("idle", "armed"):
             if still:
                 assert self._still_last is not None
@@ -476,6 +520,7 @@ class Measurer:
                     self._end_still(events)
                 self._state = "falling"
                 self._samples = [(t, row)]
+                self._track = [(obs.cx, obs.width)]
                 self._extreme = (t, row)
             elif not still and t - rest[0] > 1.0:
                 self._state = "idle"  # moved, but not a fall: carried somewhere
@@ -486,6 +531,7 @@ class Measurer:
             if self._state not in ("falling", "rising"):
                 return
         self._samples.append((t, row))
+        self._track.append((obs.cx, obs.width))
 
         if self._state == "falling":
             if still:  # caught or set down before reaching the floor
@@ -628,6 +674,14 @@ class Measurer:
         t_apex = t_top - c[1] / (2 * c[2])
         apex_z = _quad_eval(c, t_apex, t_top)
 
+        # The ball's width and place at the top come from the apex fit's frames: there
+        # it is in flight (no hand over it, which made a held ball look ~20% narrow)
+        # and nearly still (little blur).
+        by_t = {t: (r, *xw) for (t, r), xw in zip(self._samples, self._track, strict=True)}
+        apex_pts = [(t, *by_t[t]) for t, _ in top]
+        apex_w = statistics.median(w for _, _, _, w in apex_pts)
+        side_cm = _side_cm([by_t[t] for t, _ in fall], apex_pts, t_apex, apex_w)
+
         # The frame interval next to the lowest point seen bounds how far above the
         # floor that point can be (see _floor_cm).
         times = [t for t, _ in self._samples]
@@ -678,9 +732,15 @@ class Measurer:
             method = "self"
             warnings.append("no calibration holds: assumes a level camera")
             expected_w = BALL_DIAMETER_CM * (floor_row - release_row) / h
-        if not -s.width_warn <= 2 * radius / expected_w - 1 <= wide_ok:
+        if not -s.width_warn <= apex_w / expected_w - 1 <= wide_ok:
             warnings.append(
-                f"ball looks {2 * radius:.0f} px wide; the scale predicts {expected_w:.0f}"
+                f"ball looks {apex_w:.0f} px wide at the top; the scale predicts {expected_w:.0f}"
+            )
+        if side_cm is not None and abs(side_cm) > s.side_warn_cm:
+            side = "right" if side_cm > 0 else "left"
+            warnings.append(
+                f"bounced off at an angle: {abs(side_cm):.0f} cm to the {side} by the top, "
+                "so it may also have moved toward or away from the camera"
             )
         if not 0.3 <= rebound / h <= 0.8:
             warnings.append(f"rebound is {rebound / h:.0%} of the drop height: check this drop")
@@ -702,6 +762,7 @@ class Measurer:
             warnings=tuple(warnings),
             low_row=imp_row,
             low_gap_s=low_gap,
+            side_cm=side_cm,
         )
 
 

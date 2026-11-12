@@ -143,6 +143,7 @@ class Result:
                         "apex": d.apex_row,
                         "lowest_seen": d.low_row,
                     },
+                    "side_cm": d.side_cm,
                     "fit_rms_r": d.fit_rms_r,
                     "samples": d.samples,
                     "warnings": list(d.warnings),

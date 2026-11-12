@@ -466,6 +466,8 @@
           : null)),
         el("td", {}, el("select", { "aria-label": "Ball", "data-focus": `b${d.seq}`, onchange: (e) => edit(d.seq, { ball_no: +e.target.value }) }, ...ballOptions(d.ball_no))),
         el("td", { class: "num" }, fmt(d.measured_cm)),
+        el("td", { class: "num" }, d.side_cm == null ? "–"
+          : `${fmt(Math.abs(d.side_cm), units() === "in" ? 1 : 0)}${Math.abs(d.side_cm) < 0.5 ? "" : d.side_cm < 0 ? " ←" : " →"}`),
         el("td", { class: "height" }, height, d.edited_cm != null
           ? el("button", { class: "link small", type: "button", title: "Use the measurement", onclick: () => edit(d.seq, { edited_cm: null }) }, " ↺")
           : null, d.edited_cm != null ? el("span", { class: "tag" }, "edited") : null),
@@ -474,7 +476,7 @@
       );
     }));
     if (focused) tbody.querySelector(`[data-focus="${focused}"]`)?.focus();
-    if (!rev.drops.length) tbody.append(el("tr", {}, el("td", { colspan: 6, class: "muted" }, "No drops were found. Try Analyse again and click the ball.")));
+    if (!rev.drops.length) tbody.append(el("tr", {}, el("td", { colspan: 7, class: "muted" }, "No drops were found. Try Analyse again and click the ball.")));
   }
 
   const edit = (seq, changes) => act(() => api("POST", `/api/review/${seq}`, changes));

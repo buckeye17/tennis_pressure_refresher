@@ -147,8 +147,12 @@ def test_calibration_rejects_rows_out_of_order():
 # --- the state machine, on exact observations (no rendering) ----------------------------
 
 
-def observations(cam: synth.Camera, spec: synth.SessionSpec, fps: float = 30.0):
-    """Perfect per-frame observations of a synthetic session, plus the truth."""
+def observations(
+    cam: synth.Camera, spec: synth.SessionSpec, fps: float = 30.0, held_size: float = 1.0
+):
+    """Perfect per-frame observations of a synthetic session, plus the truth. With
+    ``held_size``, a ball in the hand looks that much smaller (fingers hide its edges
+    and top; its bottom stays put)."""
     tr, truth = synth.build(spec, cam)
     out = []
     for i in range(int(tr.end * fps)):
@@ -156,8 +160,9 @@ def observations(cam: synth.Camera, spec: synth.SessionSpec, fps: float = 30.0):
         x, y, hand = tr.at(t)
         u, v, ppm = cam.project(x, y + synth.BALL_RADIUS_M)
         r = synth.BALL_RADIUS_M * ppm
+        k = held_size if hand else 1.0
         visible = 0 <= u <= cam.width
-        out.append((t, Observation(t, u, v, 2 * r, 2 * r, v + r) if visible else None))
+        out.append((t, Observation(t, u, v, 2 * r * k, 2 * r * k, v + r) if visible else None))
     return out, truth
 
 
@@ -225,6 +230,49 @@ def test_one_bad_frame_does_not_end_the_rise():
     assert len(m.drops) == 3
     for d, t in zip(m.drops, truth.drops, strict=True):
         assert d.rebound_cm == pytest.approx(corrected(t), rel=0.003)
+
+
+def test_a_hand_over_the_held_ball_does_not_make_it_look_small():
+    """On a real session the held ball looked ~20% narrower than in flight (fingers
+    over its edges), and a ball size taken over the last 2 s, mostly the hold before
+    the release, flagged good drops as "ball looks 28 px wide; the scale predicts 35"."""
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, truth = observations(synth.Camera.framing(H, 8.0), spec, held_size=0.78)
+    m, _ = run(obs, spec)
+    assert len(m.drops) == 3
+    for d, t in zip(m.drops, truth.drops, strict=True):
+        assert d.rebound_cm == pytest.approx(corrected(t), rel=0.002)
+        assert d.warnings == ()
+
+
+def test_a_ball_that_bounces_off_at_an_angle_is_flagged():
+    """The second drop bounces off sideways, 15 cm by the top. The camera is also
+    rolled ~4.6 degrees, as on a real session where every fall looked 15 cm slanted:
+    that alone mustn't flag anything."""
+    spec = synth.SessionSpec(release_sd_cm=0.0, cor=(0.75,), drops_per_ball=3)
+    obs, truth = observations(synth.Camera.framing(H, 8.0), spec)
+    rolled = [(t, o if o is None else replace(o, cx=o.cx + 0.08 * o.cy)) for t, o in obs]
+    clean, _ = run(rolled, spec)
+    assert [d.warnings for d in clean.drops] == [()] * 3
+    assert all(abs(d.side_cm) < 0.5 for d in clean.drops)
+
+    d1, d2 = clean.drops[1], clean.drops[2]
+
+    def kicked(t, o):
+        if o is None or not d1.t_impact < t < d2.t_release:
+            return o
+        px_per_cm = o.width / measure.BALL_DIAMETER_CM
+        frac = (t - d1.t_impact) / (d1.t_apex - d1.t_impact)
+        return replace(o, cx=o.cx - 15.0 * px_per_cm * frac)  # to the left
+
+    m, _ = run([(t, kicked(t, o)) for t, o in rolled], spec)
+    assert len(m.drops) == 3
+    assert m.drops[1].side_cm == pytest.approx(-15.0, abs=1.0)
+    assert any("15 cm to the left" in w for w in m.drops[1].warnings)
+    for i in (0, 2):
+        assert m.drops[i].warnings == ()
+    for d, t in zip(m.drops, truth.drops, strict=True):  # sideways alone: same heights
+        assert d.rebound_cm == pytest.approx(corrected(t), rel=0.002)
 
 
 @pytest.mark.parametrize(

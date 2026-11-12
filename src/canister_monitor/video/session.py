@@ -229,6 +229,7 @@ class Review:
                     "outlier_z": outliers.get(d.seq),
                     "release_cm": details[d.seq].release_cm,
                     "method": details[d.seq].method,
+                    "side_cm": details[d.seq].side_cm,
                     "warnings": list(details[d.seq].warnings),
                     "image": d.seq in self.analyzer.result.images,
                     "closeup": d.seq in self.analyzer.result.closeups,

@@ -156,6 +156,28 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE bounce_video_drops ADD COLUMN closeup BLOB;
     """,
+    # 6: charge sessions (a batch's time in a canister) and play (PLAN.md 6.4)
+    """
+    CREATE TABLE charge_sessions (
+        id        INTEGER PRIMARY KEY,
+        batch_id  INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+        mac       TEXT,
+        start_ts  REAL NOT NULL,
+        end_ts    REAL,
+        note      TEXT
+    );
+    CREATE INDEX idx_charge_sessions_batch ON charge_sessions(batch_id, start_ts);
+    CREATE INDEX idx_charge_sessions_mac ON charge_sessions(mac, start_ts);
+
+    CREATE TABLE play_sessions (
+        id        INTEGER PRIMARY KEY,
+        batch_id  INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+        ts        REAL NOT NULL,
+        hours     REAL,
+        note      TEXT
+    );
+    CREATE INDEX idx_play_sessions_batch ON play_sessions(batch_id, ts);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -537,12 +559,16 @@ LEAK_TEST_END_KINDS = ("fill", "leak_test", "vent", "balls_added")
 
 
 def latest_fill_ts(conn: sqlite3.Connection, mac: str, now: float) -> float | None:
-    """Time of the most recent fill (or leak test) for this sensor (or for all canisters)."""
+    """Time of the most recent fill (or leak test) for this sensor (or for all canisters).
+    The start of a charge session in this canister counts: the canister is pumped up then."""
     return conn.execute(
-        f"""SELECT MAX(ts) FROM events
-            WHERE kind IN ({",".join("?" * len(FILL_KINDS))})
-              AND (mac = ? OR mac IS NULL) AND ts <= ?""",
-        (*FILL_KINDS, mac, now),
+        f"""SELECT MAX(ts) FROM (
+                SELECT ts FROM events
+                WHERE kind IN ({",".join("?" * len(FILL_KINDS))})
+                  AND (mac = ? OR mac IS NULL) AND ts <= ?
+                UNION ALL
+                SELECT start_ts FROM charge_sessions WHERE mac = ? AND start_ts <= ?)""",
+        (*FILL_KINDS, mac, now, mac, now),
     ).fetchone()[0]
 
 
@@ -550,12 +576,17 @@ def leak_test_spans(conn: sqlite3.Connection, mac: str, now: float) -> list[tupl
     """(start, end) of each leak test of this sensor's canister, oldest first.
 
     A test runs from its "leak_test" event to the next fill, leak test, vent or
-    balls_added event for the same canister or all canisters, or to ``now``.
+    balls_added event for the same canister or all canisters, to the start of a
+    charge session in this canister, or to ``now``.
     """
     rows = conn.execute(
-        """SELECT ts, kind FROM events
-           WHERE (mac = ? OR mac IS NULL) AND ts <= ? ORDER BY ts, id""",
-        (mac, now),
+        """SELECT ts, kind FROM (
+               SELECT ts, kind, id FROM events WHERE (mac = :mac OR mac IS NULL) AND ts <= :now
+               UNION ALL
+               SELECT start_ts, 'balls_added', id FROM charge_sessions
+               WHERE mac = :mac AND start_ts <= :now)
+           ORDER BY ts, id""",
+        {"mac": mac, "now": now},
     ).fetchall()
     spans = []
     for i, (ts, kind) in enumerate(rows):
@@ -717,13 +748,137 @@ def highest_ball_tested(conn: sqlite3.Connection, batch_id: int) -> int | None:
 
 
 def batch_locations(conn: sqlite3.Connection) -> dict[int, tuple[str, str | None]]:
-    """Latest (kind, mac) of each batch's balls_added / balls_removed event."""
+    """Where each batch last went: (kind, mac), kind being balls_added or balls_removed.
+
+    From the start and end of its charge sessions, and from balls_added /
+    balls_removed notes that name it (how this was recorded before sessions).
+    """
     rows = conn.execute(
-        """SELECT batch_id, kind, mac FROM events
-           WHERE batch_id IS NOT NULL AND kind IN ('balls_added', 'balls_removed')
-           ORDER BY ts, id"""
+        """SELECT batch_id, kind, mac FROM (
+               SELECT batch_id, kind, mac, ts, 0 AS rank, id FROM events
+               WHERE batch_id IS NOT NULL AND kind IN ('balls_added', 'balls_removed')
+               UNION ALL
+               SELECT batch_id, 'balls_removed', mac, end_ts, 1, id FROM charge_sessions
+               WHERE end_ts IS NOT NULL
+               UNION ALL
+               SELECT batch_id, 'balls_added', mac, start_ts, 2, id FROM charge_sessions)
+           ORDER BY ts, rank, id"""
     ).fetchall()
     return {r["batch_id"]: (r["kind"], r["mac"]) for r in rows}
+
+
+# --- charge sessions and play (PLAN.md 6.4) -------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChargeSession:
+    """A batch's time in a canister: pumped up to charge, then held at maintenance
+    pressure until the balls come out. ``end_ts`` is None while they're still in."""
+
+    id: int
+    batch_id: int
+    mac: str | None  # the canister's sensor; None if it has none
+    start_ts: float
+    end_ts: float | None
+    note: str | None
+
+
+SESSION_FIELDS = ("mac", "start_ts", "end_ts", "note")
+
+
+def insert_session(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    start_ts: float,
+    mac: str | None = None,
+    end_ts: float | None = None,
+    note: str | None = None,
+) -> int:
+    with conn:
+        return conn.execute(
+            "INSERT INTO charge_sessions (batch_id, mac, start_ts, end_ts, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (batch_id, mac, start_ts, end_ts, note),
+        ).lastrowid
+
+
+def update_session(conn: sqlite3.Connection, session_id: int, **fields) -> bool:
+    """Set any of ``SESSION_FIELDS``; False if the session doesn't exist."""
+    cols = [f for f in SESSION_FIELDS if f in fields]
+    if not cols:
+        return get_session(conn, session_id) is not None
+    with conn:
+        return (
+            conn.execute(
+                f"UPDATE charge_sessions SET {', '.join(f'{c} = :{c}' for c in cols)} "
+                "WHERE id = :id",
+                {**fields, "id": session_id},
+            ).rowcount
+            > 0
+        )
+
+
+def get_session(conn: sqlite3.Connection, session_id: int) -> ChargeSession | None:
+    row = conn.execute(
+        "SELECT id, batch_id, mac, start_ts, end_ts, note FROM charge_sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    return None if row is None else ChargeSession(**dict(row))
+
+
+def list_sessions(conn: sqlite3.Connection, batch_id: int | None = None) -> list[ChargeSession]:
+    """Sessions oldest first."""
+    rows = conn.execute(
+        """SELECT id, batch_id, mac, start_ts, end_ts, note FROM charge_sessions
+           WHERE (:batch IS NULL OR batch_id = :batch) ORDER BY start_ts, id""",
+        {"batch": batch_id},
+    ).fetchall()
+    return [ChargeSession(**dict(r)) for r in rows]
+
+
+def delete_session(conn: sqlite3.Connection, session_id: int) -> bool:
+    with conn:
+        return conn.execute("DELETE FROM charge_sessions WHERE id = ?", (session_id,)).rowcount > 0
+
+
+@dataclass(frozen=True)
+class Play:
+    """A batch was played with. ``hours`` is None if it wasn't noted."""
+
+    id: int
+    batch_id: int
+    ts: float
+    hours: float | None
+    note: str | None
+
+
+def insert_play(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    ts: float,
+    hours: float | None = None,
+    note: str | None = None,
+) -> int:
+    with conn:
+        return conn.execute(
+            "INSERT INTO play_sessions (batch_id, ts, hours, note) VALUES (?, ?, ?, ?)",
+            (batch_id, ts, hours, note),
+        ).lastrowid
+
+
+def list_plays(conn: sqlite3.Connection, batch_id: int | None = None) -> list[Play]:
+    """Play oldest first."""
+    rows = conn.execute(
+        """SELECT id, batch_id, ts, hours, note FROM play_sessions
+           WHERE (:batch IS NULL OR batch_id = :batch) ORDER BY ts, id""",
+        {"batch": batch_id},
+    ).fetchall()
+    return [Play(**dict(r)) for r in rows]
+
+
+def delete_play(conn: sqlite3.Connection, play_id: int) -> bool:
+    with conn:
+        return conn.execute("DELETE FROM play_sessions WHERE id = ?", (play_id,)).rowcount > 0
 
 
 @dataclass(frozen=True)

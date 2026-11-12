@@ -65,6 +65,18 @@ class BounceConfig:
 
 
 @dataclass(frozen=True)
+class ChargeConfig:
+    """Charge sessions (PLAN.md section 6.4). The last three are starting values:
+    bounce tests before and after sessions and play refine the last two."""
+
+    maintenance_psi: float = 14.0  # holds like-new balls where they are
+    charge_psi: float = 30.0  # the elevated pressure a canister is pumped to
+    uptake_per_day: float = 0.03  # share of the gap to the canister's pressure closed per day
+    rebound_pct_per_psi: float = 1.3  # rebound per psi of ball pressure, % of new-ball rebound
+    play_loss_pct_per_hour: float = 0.3  # rebound lost per hour of play, % of new-ball rebound
+
+
+@dataclass(frozen=True)
 class SensorConfig:
     mac: str
     canister: str
@@ -77,6 +89,7 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     trends: TrendsConfig = field(default_factory=TrendsConfig)
     bounce: BounceConfig = field(default_factory=BounceConfig)
+    charge: ChargeConfig = field(default_factory=ChargeConfig)
     sensors: list[SensorConfig] = field(default_factory=list)
 
     def canister_for(self, mac: str) -> str | None:
@@ -134,7 +147,8 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
     A relative ``db_path`` is resolved against ``base_dir`` (the config file's
     directory) when given.
     """
-    unknown = sorted(set(data) - {"site", "collector", "web", "trends", "bounce", "sensors"})
+    sections = {"site", "collector", "web", "trends", "bounce", "charge", "sensors"}
+    unknown = sorted(set(data) - sections)
     if unknown:
         raise ConfigError(f"unknown section(s): {', '.join(unknown)}")
 
@@ -191,6 +205,25 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
             f"[bounce] display_units must be one of {LENGTH_UNITS}, got {bounce.display_units!r}"
         )
 
+    charge = ChargeConfig(**_section(ChargeConfig, data.get("charge", {}), "charge"))
+    _positive(
+        "charge",
+        maintenance_psi=charge.maintenance_psi,
+        uptake_per_day=charge.uptake_per_day,
+        rebound_pct_per_psi=charge.rebound_pct_per_psi,
+    )
+    if charge.play_loss_pct_per_hour < 0:
+        raise ConfigError(
+            f"[charge] play_loss_pct_per_hour can't be negative, "
+            f"got {charge.play_loss_pct_per_hour}"
+        )
+    # The dashboard treats pressures within 2 psi of maintenance as "at maintenance".
+    if charge.charge_psi < charge.maintenance_psi + 4:
+        raise ConfigError(
+            f"[charge] charge_psi must be at least 4 psi above maintenance_psi "
+            f"({charge.maintenance_psi:g}), got {charge.charge_psi:g}"
+        )
+
     raw_sensors = data.get("sensors", [])
     if not isinstance(raw_sensors, list):
         raise ConfigError("sensors must be an array of tables: [[sensors]]")
@@ -209,7 +242,13 @@ def parse_config(data: dict[str, Any], base_dir: Path | None = None) -> Config:
         sensors.append(SensorConfig(mac=mac, canister=values["canister"]))
 
     return Config(
-        site=site, collector=collector, web=web, trends=trends, bounce=bounce, sensors=sensors
+        site=site,
+        collector=collector,
+        web=web,
+        trends=trends,
+        bounce=bounce,
+        charge=charge,
+        sensors=sensors,
     )
 
 

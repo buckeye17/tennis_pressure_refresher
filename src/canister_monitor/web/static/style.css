@@ -10,6 +10,8 @@
   --stale-bg: #fff7e6;
   --danger: #b91c1c;
   --ok: #15803d;
+  --band: rgb(21 128 61 / 0.12);
+  --shade: rgb(37 99 235 / 0.12);
   --radius: 10px;
   color-scheme: light;
 }
@@ -27,6 +29,8 @@
     --stale-bg: #2b2414;
     --danger: #f87171;
     --ok: #4ade80;
+    --band: rgb(74 222 128 / 0.12);
+    --shade: rgb(96 165 250 / 0.16);
     color-scheme: dark;
   }
 }
@@ -284,6 +288,30 @@ a { color: var(--accent); }
 .drop-pic.rejected { opacity: 0.45; }
 .drop-pic figcaption { margin-top: 2px; white-space: normal; }
 .drop-pic .tag { margin-left: 4px; }
+
+/* Charge sessions: what to do with a batch, and its history (PLAN.md 6.4). */
+.advice {
+  border-left: 4px solid var(--border);
+  background: var(--grid);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px 0;
+  display: grid;
+  gap: 2px;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.advice strong { font-size: 0.98rem; }
+.advice.act { border-left-color: var(--stale); background: var(--stale-bg); }
+.advice.wait { border-left-color: var(--accent); }
+.advice.ok { border-left-color: var(--ok); }
+.advice .foot { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+.advice-short.act { color: var(--stale); font-weight: 600; }
+.advice-short.ok { color: var(--ok); }
+.history { display: grid; gap: 4px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); min-width: 0; }
+.batch-chart { min-height: 220px; }
+.history .readings td.note { white-space: normal; min-width: 8em; }
+.history .readings .tag { margin-left: 6px; }
 
 details.sub { border-top: 1px solid var(--border); padding: 8px 0; }
 details.sub > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }

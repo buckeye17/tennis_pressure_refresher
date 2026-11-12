@@ -37,6 +37,17 @@ like_new_tolerance_pct = 5.0
 itf_rebound_in = [53.0, 58.0]
 display_units = "in"             # in | cm (the dashboard can switch too)
 
+[charge]
+# Charge sessions (PLAN.md 6.4): how long to keep a canister pumped up before
+# lowering it to maintenance pressure. Gauge psi.
+maintenance_psi = 14.0           # holds like-new balls where they are: about a new ball's own pressure
+charge_psi = 30.0                # the elevated pressure you pump a canister to
+# Starting values for the estimate. Bounce tests before and after sessions and
+# play retune the last two; the first stays as set here.
+uptake_per_day = 0.03            # share of the gap to the canister's pressure a ball closes per day
+rebound_pct_per_psi = 1.3        # rebound per psi of ball pressure, as % of the new-ball rebound
+play_loss_pct_per_hour = 0.3     # rebound lost per hour of play, as % of the new-ball rebound
+
 # Map sensor MACs to canister names. Unlisted sensors that match a decoder
 # still get recorded and appear in the UI as "Unassigned".
 [[sensors]]

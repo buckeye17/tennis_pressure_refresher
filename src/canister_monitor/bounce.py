@@ -48,6 +48,39 @@ def summarize(drops: Iterable[tuple[int, float]]) -> TestSummary:
     )
 
 
+# --- the new-ball reference ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NewBallReference:
+    rebound_cm: float
+    source: str  # own_new | same_model | batch_value | entered
+    tests: int  # new-ball tests averaged (0 for a value typed in)
+
+
+def new_ball_reference(
+    own_new_cm: Sequence[float],
+    same_model_new_cm: Sequence[float],
+    batch_value_cm: float | None,
+    entered_cm: float | None,
+) -> NewBallReference | None:
+    """What a batch's balls rebounded when new, at one setup: the first available of
+    its own new-ball tests (their means, averaged), new-ball tests of other batches
+    of the same brand and model, the value typed on the batch, and the one typed
+    for the brand and model. None without any of them."""
+    if own_new_cm:
+        return NewBallReference(statistics.fmean(own_new_cm), "own_new", len(own_new_cm))
+    if same_model_new_cm:
+        return NewBallReference(
+            statistics.fmean(same_model_new_cm), "same_model", len(same_model_new_cm)
+        )
+    if batch_value_cm is not None:
+        return NewBallReference(batch_value_cm, "batch_value", 0)
+    if entered_cm is not None:
+        return NewBallReference(entered_cm, "entered", 0)
+    return None
+
+
 # --- outliers ---------------------------------------------------------------------------
 
 OUTLIER_ALPHA = 0.05  # chance of flagging anything in a test whose drops are all fine

@@ -155,7 +155,6 @@
           <option value="balls_added">Balls added</option>
           <option value="balls_removed">Balls removed</option>
         </select>
-        <select id="event-batch" aria-label="Ball batch" hidden><option value="">No batch</option></select>
         <input id="event-note" type="text" maxlength="1000" placeholder="e.g. filled to 30 psi" aria-label="Note">
         <input id="event-when" type="datetime-local" aria-label="When (leave empty for now)" title="When (leave empty for now)">
         <button type="submit">Add</button>
@@ -203,6 +202,41 @@
       <div class="dialog-actions">
         <button type="button" data-close>Cancel</button>
         <button type="submit" class="primary" id="test-save">Save test</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="session-dialog" aria-labelledby="session-title">
+    <form id="session-form" class="dialog-form" novalidate>
+      <h2 id="session-title">Charge session</h2>
+      <p class="hint">A session is the balls' whole stay in a canister: start it when they go in and it's pumped up, end it when they come out to play. Lowering it to maintenance pressure isn't an end: the app sees that from the readings.</p>
+      <div class="fields">
+        <label>Canister <select id="session-mac"></select></label>
+        <label>Went in (blank = now) <input id="session-start" type="datetime-local"></label>
+        <label>Came out (blank = still in) <input id="session-end" type="datetime-local"></label>
+        <label class="wide">Note <input id="session-note" maxlength="1000" placeholder="optional, e.g. pumped to 30 psi"></label>
+      </div>
+      <p class="form-error" id="session-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="play-dialog" aria-labelledby="play-title">
+    <form id="play-form" class="dialog-form" novalidate>
+      <h2 id="play-title">Log play</h2>
+      <div class="fields">
+        <label>When (blank = now) <input id="play-when" type="datetime-local"></label>
+        <label>Hours played <input id="play-hours" inputmode="decimal" placeholder="e.g. 1.5"></label>
+        <label class="wide">Note <input id="play-note" maxlength="1000" placeholder="optional, e.g. doubles, hard court"></label>
+      </div>
+      <p class="hint">With the hours, the app can learn what an hour of play costs these balls. A bounce test before the balls go back in a canister tells it most.</p>
+      <p class="form-error" id="play-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" data-close>Cancel</button>
+        <button type="submit" class="primary">Save</button>
       </div>
     </form>
   </dialog>

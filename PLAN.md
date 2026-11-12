@@ -459,6 +459,59 @@ ALTER TABLE bounce_setups ADD COLUMN mid_mark_cm REAL;   -- calibration mark bet
 - The web app is tested with Flask's test client and a **synthetic camera**: a frame source that renders a session in real time, standing in for a webcam. A full session must run through it: holds, drops, undo, finish, review edits, then Save to a fake Pi.
 - Real clips go in `samples/` (git-ignored). Each is checked against a frame-by-frame reading by hand, and the results are recorded in §13.
 
+### 6.4 Charge sessions and advice (Phase 8b.3, `charge.py`)
+
+**Goal:** follow a batch from new through play and canister sessions, keep it at its new-ball bounce, and say how long to keep a canister at an elevated pressure before lowering it to a maintenance pressure. The user doesn't know when they'll next play, so the plan is: charge until the balls are back to new, then hold them there indefinitely.
+
+**What is recorded** (tables in §7):
+- A **charge session** is a batch's whole stay in a canister: from going in and pumping up, through the lowering to maintenance pressure, to coming out to play. It has a canister (its sensor's MAC), a start, an end (empty while the balls are in), and a note. Lowering the pressure isn't an end; the readings show it. A batch's sessions can't overlap, and one can be entered after the fact.
+- **Play**: when, and optionally for how many hours.
+- Sessions replace the batch picker on `balls_added` / `balls_removed` notes as the record of where a batch is. Old notes that name a batch still count. A session's start counts as a fill of its canister (trends, the Since fill range) and ends a leak test there.
+
+**Model.** The uptake model of §6.2, written for r, the batch-mean rebound as a share of its new-ball rebound (1.0 is like new), so batches of one kind of ball can share a fit:
+
+```
+dr/dt = k * (r_eq(P) - r),   r_eq(P) = 1 + beta * (P - P_m)
+r drops by gamma * hours at each play
+```
+
+- P is the canister's temperature-compensated gauge pressure during a session, as steps between readings (at most 600 per session, averaged), and 0 outside one. A canister with no readings stops the estimate until the next test.
+- P_m is the **maintenance pressure**: where like-new balls neither gain nor lose, i.e. a new ball's own gauge pressure. `[charge] maintenance_psi`, default 14.
+- k is how fast a ball follows the pressure around it (`uptake_per_day`, default 0.03: a time constant of about a month). beta is the rebound per unit of ball pressure (`rebound_pct_per_psi`, default 1.3% of new per psi). gamma is the rebound an hour of play costs (`play_loss_pct_per_hour`, default 0.3%).
+- These defaults are **guesses** from general knowledge of tennis balls, not measurements: a fully flat ball is taken to rebound about 18% lower than a new one, and a ball on the shelf to lose about 0.5% a day at first. Replace them as the data comes in.
+- The estimate starts at each bounce test's measured value and follows P from there, so model error doesn't carry from one test to the next.
+
+**New-ball reference** for a batch, at the setup of its latest test (`bounce.new_ball_reference`, the order of §6.2): its own `new` tests, then `new` tests of other batches of the same brand and model, then the value typed on the batch, then the one typed for the brand and model. Without one there is no estimate.
+
+**Learning** (`charge.fit`). Between two consecutive tests of a batch, the model is linear in beta and gamma:
+
+```
+r1 = 1 + (r0 - 1) * exp(-k T) + beta * x - gamma * h
+```
+
+where x is the pressure's push (kPa, from the measured P) and h the hours of play, less what has been made up since. beta and gamma are fitted by least squares over every such pair of one brand, model and setup, with the configured values as a prior: beta known to ±50% of itself, gamma to ±itself, and each pair's change in r good to ±1.2% (about 1.5 cm on a 110 cm rebound). So one short session barely moves them, and several long ones take over. A pair is left out if the batch sat in a canister with no readings or was played with no hours noted. Limits: gamma can't go negative (play can't add bounce), and beta stays within 0.25–4× the configured value. k and P_m are not fitted: charging and fading both depend on k·beta to first order, so k alone is poorly identified, and P_m needs a long hold at one pressure with tests either side.
+
+**Advice** (`charge.advise`), from the estimate now and the canister's latest reading:
+
+| Status | When | Says |
+|---|---|---|
+| `charging` | pressure more than 2 psi over P_m, r < 1 | keep it there for the time r needs to reach 1 at that pressure, then lower to P_m |
+| `lower_now` | pressure over P_m + 2 psi, r ≥ 1 | lower to P_m now |
+| `holding` | within 2 psi of P_m, r ≥ 0.98 | nothing to do |
+| `raise` | at or below P_m + 2 psi, r < 0.98 | pump to `charge_psi` for the time that would take, then lower |
+| `low` | more than 2 psi under P_m, r ≥ 0.98 | pump up to P_m |
+| `out` | not in a canister | how fast it's fading, and how long at `charge_psi` would bring it back |
+| `no_pressure` | in a canister, no fresh reading | check the sensor |
+| `unknown` | no test, no reference, or a session with no readings | what's missing |
+
+- The 2 psi margin is the sensors' accuracy. The 2% before `raise` keeps a batch at maintenance pressure from being sent back up for a difference smaller than a test can see.
+- Times assume the pressure stays where it is. It doesn't quite (the balls take air and the canister leaks), so the time is recomputed from the measured pressure on every refresh.
+- Each time comes with a likely range, from the model one sd of beta either way.
+
+**Checked on the first real data** (2026-11-12, a copy of the Pi's database): 9 Dunlop ATP balls, new test 110.8 cm, then 11 h at 33 psi, about 3 h of play, and a test at 112.8 cm (101.8% of new), then back in at 32 psi. The model expected +0.3% from the first session; the test said +1.8%, which is within what two tests can differ by. With the balls at or over new and the canister at 32 psi, the advice is to lower to 14 psi now.
+
+**Not modelled yet:** ageing (felt wear and tired rubber lower the rebound a ball settles at, which will show as sessions that stop getting back to 100%), ball temperature at the test, and the fall in canister pressure over a session.
+
 ---
 
 ## 7. Data model (SQLite)
@@ -574,7 +627,30 @@ ALTER TABLE events ADD COLUMN batch_id INTEGER REFERENCES ball_batches(id) ON DE
 
 A setup can't be deleted once a test, reference value or conversion uses it. Deleting a batch deletes its tests; events that named it keep their note.
 
-**Planned (Phase 8b.2, §6.3):** `bounce_video_analyses`, `bounce_video_drops`, and `bounce_tests.source`.
+**Video tests (migrations 4 and 5, §6.3):** `bounce_video_analyses`, `bounce_video_drops`, and `bounce_tests.source`.
+
+**Charge sessions and play** (migration 6, §6.4):
+
+```sql
+CREATE TABLE charge_sessions (          -- a batch's stay in a canister
+    id        INTEGER PRIMARY KEY,
+    batch_id  INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+    mac       TEXT,                     -- the canister's sensor; NULL if it has none
+    start_ts  REAL NOT NULL,
+    end_ts    REAL,                     -- NULL while the balls are still in
+    note      TEXT
+);
+
+CREATE TABLE play_sessions (
+    id        INTEGER PRIMARY KEY,
+    batch_id  INTEGER NOT NULL REFERENCES ball_batches(id) ON DELETE CASCADE,
+    ts        REAL NOT NULL,
+    hours     REAL,                     -- NULL if not noted
+    note      TEXT
+);
+```
+
+A batch's location is its latest session start or end, or a later `balls_added` / `balls_removed` note that names it.
 
 **Write policy (collector):**
 - Store a raw advert when its payload differs from the previous one for that MAC, **or** at most once per `raw_heartbeat_minutes` (default 10) if unchanged.
@@ -636,7 +712,18 @@ itf_rebound_in = [53.0, 58.0]    # [48.0, 53.0] for high-altitude balls
 display_units = "in"             # in | cm
 ```
 
-Bounce setups, batches, reference values and the ITF conversion are data, entered in the dashboard, not config.
+Charge sessions (§6.4):
+
+```toml
+[charge]
+maintenance_psi = 14.0           # holds like-new balls where they are
+charge_psi = 30.0                # the elevated pressure a canister is pumped to; at least 4 psi over maintenance
+uptake_per_day = 0.03            # k: share of the gap to the canister's pressure closed per day
+rebound_pct_per_psi = 1.3        # beta, a starting value: tests retune it
+play_loss_pct_per_hour = 0.3     # gamma, likewise
+```
+
+Bounce setups, batches, reference values, the ITF conversion, charge sessions and play are data, entered in the dashboard, not config.
 
 Config is loaded by `config.py` into typed dataclasses with validation and clear error messages. Both processes accept `--config PATH`.
 
@@ -686,6 +773,12 @@ Required so agents can develop and test **without BLE hardware**.
 | `GET /api/export.csv?from=&to=&mac=` | CSV (every reading, no downsampling): `local_time,utc_epoch,canister,mac,gauge_psi,abs_psi,compensated_gauge_psi,temp_c,battery_pct,battery_v` |
 | `GET /healthz` | `{"ok": true, "db": "...", "newest_reading_age_s": N}` |
 
+| `GET /api/charge` | Charge sessions (§6.4), everything at once. `settings` (maintenance and charge pressure and the margin in kPa, like-new tolerance) and one entry per batch: its `reference`, `in_canister`, `mac`, current `pressure_kpa`, `flags` (`no_sensor`, `no_readings`, `stale`, `play_hours_missing`), the estimated `ratio` now with its `ratio_range`, `advice` (`status`, `hold_s`, `charge_s`, their ranges, `drift_per_day`), `tests` with their ratios, `sessions` (each with its pressure summary, the tests before and after, and the estimate at its start and end), `plays`, the `estimate` line for the chart, `totals` and the fitted `model` |
+| `POST /api/charge/sessions` | Start a session `{batch_id, mac?, start_ts?, end_ts?, note?}`; `start_ts` defaults to now. 409 if it overlaps another of the batch's sessions |
+| `PATCH /api/charge/sessions/<id>` | Change `mac`, `start_ts`, `end_ts` or `note`. An `end_ts` ends the session; null reopens it |
+| `DELETE /api/charge/sessions/<id>` | Remove a session (readings are kept) |
+| `POST /api/charge/plays`, `DELETE /api/charge/plays/<id>` | Log play `{batch_id, ts?, hours?, note?}`, or remove it |
+
 Validate query params; return 400 with `{"error": "..."}` on bad input (404 for a missing event). Event `kind` is a short lowercase word (`note`, `fill`, `vent`, `balls_added`, …).
 
 ### 9.4 Dashboard (`templates/index.html`, `static/app.js`, `static/style.css`)
@@ -732,6 +825,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │   ├── trends.py                 # Phase 7
 │   ├── leak.py                   # Phase 8
 │   ├── bounce.py                 # Phase 8 (§6.2)
+│   ├── charge.py                 # Phase 8b.3 (§6.4): uptake model, fit, advice
 │   ├── video/                    # Phase 8b.2, laptop only (§6.3)
 │   │   ├── detect.py             # find the ball in each frame
 │   │   ├── measure.py            # split into drops, fit parabolas, rebound heights
@@ -753,6 +847,7 @@ Behavior: poll `/api/canisters` every 30 s and `/api/readings` every 60 s; refre
 │       ├── __main__.py           # waitress entrypoint
 │       ├── api.py
 │       ├── bounce_api.py         # Phase 8 (§6.2)
+│       ├── charge_api.py         # Phase 8b.3 (§6.4)
 │       ├── templates/index.html
 │       └── static/{app.js,style.css,vendor/uplot/...}
 ├── tools/{scan.py,capture.py,redecode.py,leak_sim.py}
@@ -953,6 +1048,22 @@ Next, in order. Data collection comes first because it takes the longest:
   - real clips and webcam sessions agree with a frame-by-frame reading by hand to within ±1 cm;
   - a 10-ball test takes under 5 minutes, from copying the clip or finishing the live session to saving the test;
   - the app is usable on the laptop's own screen, and its preview stays at 10 fps or more while analysis keeps up with the camera.
+- **8b.3 — Charge sessions and advice** *(done)* (§6.4). Brought forward from 8c and 8d, because a new batch was already going through sessions and needed to be tracked from the start.
+
+  As built:
+  - `charge.py` (pure, standard library): the pressure a batch sat at as steps (`Track`), `follow` (exact over each step), `estimate_line`, `pair` and `fit`, `time_to_new` and `advise`. `bounce.new_ball_reference` resolves the reference.
+  - Migration 6 and `db` functions for sessions and play. `batch_locations`, `latest_fill_ts` and `leak_test_spans` take sessions into account.
+  - `web/charge_api.py`: the endpoints in §9.3. A finished session's readings are kept between requests, since they can't change.
+  - Dashboard:
+    - Each batch card has an advice box, and **Start / End charge session**, **Log play** and **Show history** buttons.
+    - History is a chart of bounce as a share of new (tests, the estimate, time in a canister shaded, the like-new band, play) over a table of sessions and a list of play.
+    - Tests show their share of new, in the latest-test line and the tests table.
+    - A canister's card names the batch inside and what to do; the pressure chart marks session starts and ends.
+    - The Notes form no longer has a batch picker.
+  - Tests in `tests/test_charge.py`: the model against hand calculations, the fit recovering known rates, each advice status, the storage, and the API through a charging session, a hold, a fade on the shelf, validation and stale sensors.
+  - Checked in the browser on a copy of the Pi's data, at desktop and 375 px, light and dark: entering a past session, logging play, starting, ending and reopening a session.
+
+  What it takes from 8c and 8d: the reference resolution and the share of new per test (8c), and the uptake model with a fit and a prediction line (8d), in the simpler form of §6.4. Still to do there: the share of sampled balls inside the like-new band, the simulator with bounce data and `tools/bounce_sim.py`, fitting k and the temperature coefficient, and hiding predictions until the fit is identified (for now they show from the configured values, and say so).
 - **8c — Like-new from tests.** Resolve the new-ball reference (own → same brand/model → manual, with the source shown). Show each test as a share of new and the share of sampled balls in the like-new band. A batch chart shows tests as points with the band.
 
   Acceptance: unit tests for reference resolution and band shares.

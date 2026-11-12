@@ -85,10 +85,36 @@ The **Balls** panel tracks how your balls bounce, as planned in [PLAN.md §6.2](
 3. **Bounce test** new balls straight from the can, then before and after each canister session.
    Drop each numbered ball 3 times and type the rebound height, measured to the bottom of the ball.
    Slow-motion phone video against a tape measure is much more precise than reading by eye.
-4. When you put balls in a canister or take them out, add a **Balls added** / **Balls removed**
-   note and pick the batch, so the app knows where each batch is.
+4. When you put balls in a canister or take them out, start or end a **charge session** (below),
+   so the app knows where each batch is and what pressure it sat at.
 
 *Download bounce data (CSV)* exports every drop.
+
+### Charge sessions: how long to keep the pressure up
+
+Each batch's card follows it from new through play and canister sessions, and says what to do
+with the canister now. The aim is to bring the balls back to their new-ball bounce, then hold
+them there for as long as it takes until you next play.
+
+1. **Start charge session** when the balls go into a canister and you pump it up (about 30 psi).
+   Pick the canister. A session can be entered after the fact, with the times it started and ended.
+2. The card then reads something like *Keep Canister 1 at 31.5 psi for about 3.2 days more, then
+   lower it to 14.0 psi*. The time shrinks as the days pass and changes if the pressure does.
+3. When it reads *Lower Canister 1 to 14.0 psi now*, bleed the canister down to the maintenance
+   pressure and leave the balls in. That is still the same session: the app sees the lower
+   pressure in the readings and reads *Holding at maintenance pressure*.
+4. **End charge session** when the balls come out to play, then **Log play** with the hours.
+
+**Show history** on a batch charts its bounce as a share of new: dots for tests, a line for the
+estimate between them, shading for time in a canister. Under it, each session is listed with its
+pressure and the bounce before and after.
+
+The estimate comes from the latest bounce test and the canister pressure measured since, so it is
+only as good as the rates it assumes. They start as guesses in `config.toml` under `[charge]`, and
+each pair of consecutive bounce tests retunes them. The pairs that teach the most are a test just
+before the balls go in and one just after they come out. A test after play, before they go back
+in, teaches what play costs. The maintenance and charge pressures are set there too
+(`maintenance_psi`, `charge_psi`); see [PLAN.md §6.4](PLAN.md) for the model.
 
 ### Measuring from video
 

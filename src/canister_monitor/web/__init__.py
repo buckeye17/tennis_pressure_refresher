@@ -27,9 +27,11 @@ def create_app(
 
     from canister_monitor.web.api import api
     from canister_monitor.web.bounce_api import bounce_api
+    from canister_monitor.web.charge_api import charge_api
 
     app.register_blueprint(api)
     app.register_blueprint(bounce_api)
+    app.register_blueprint(charge_api)
 
     @app.get("/")
     def index():

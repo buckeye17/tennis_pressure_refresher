@@ -12,29 +12,40 @@
 <body>
   <header class="top">
     <h1>Canister Monitor</h1>
-    <div class="controls">
-      <div class="seg" id="units" role="group" aria-label="Pressure units">
-        <button type="button" data-value="psi">psi</button>
-        <button type="button" data-value="kPa">kPa</button>
-        <button type="button" data-value="bar">bar</button>
-      </div>
-      <div class="seg" id="temp-units" role="group" aria-label="Temperature units">
-        <button type="button" data-value="F">°F</button>
-        <button type="button" data-value="C">°C</button>
-      </div>
-      <label class="toggle" title="Show pressure normalized to the reference temperature, so day/night swings don't hide the real trend">
-        <input type="checkbox" id="compensated"> Temp-compensated
-      </label>
-      <span class="status" id="status" aria-live="polite"><span class="dot"></span><span id="status-text">Loading…</span></span>
-    </div>
+    <nav class="tabs" id="tabs" aria-label="Sections">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#pressure" data-view="pressure">Pressure</a>
+      <a href="#balls" data-view="balls">Balls</a>
+      <a href="#setup" data-view="setup">Setup</a>
+    </nav>
+    <span class="status" id="status" aria-live="polite"><span class="dot"></span><span id="status-text">Loading…</span></span>
   </header>
 
   <main>
-    <section class="cards" id="cards" aria-label="Canisters"></section>
+    <p class="form-error banner" id="action-error" role="alert"></p>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2 id="pressure-title">Pressure</h2>
+    <!-- Overview: what each canister reads, and what to do with the balls. -->
+    <div class="view" id="view-overview">
+      <section aria-labelledby="canisters-title">
+        <div class="section-head">
+          <h2 id="canisters-title">Canisters</h2>
+          <a class="more" href="#pressure">Pressure history</a>
+        </div>
+        <div class="cards" id="cards"></div>
+      </section>
+
+      <section aria-labelledby="todo-title">
+        <div class="section-head">
+          <h2 id="todo-title">Balls</h2>
+          <button type="button" class="batch-new">New batch</button>
+        </div>
+        <div class="batches" id="overview-batches"></div>
+      </section>
+    </div>
+
+    <!-- Pressure: the charts, the notes marked on them, and the readings behind them. -->
+    <div class="view" id="view-pressure" hidden>
+      <div class="toolbar">
         <div class="seg" id="ranges" role="group" aria-label="Time range">
           <button type="button" data-value="21600">6 h</button>
           <button type="button" data-value="86400">24 h</button>
@@ -43,34 +54,120 @@
           <button type="button" data-value="0">All</button>
           <button type="button" data-value="fill" id="range-fill" title="Since the most recent &quot;Filled&quot; note" disabled>Since fill</button>
         </div>
+        <label class="toggle" title="Show pressure normalized to the reference temperature, so day/night swings don't hide the real trend">
+          <input type="checkbox" id="compensated"> Temperature-compensated
+        </label>
       </div>
-      <div class="chart" id="chart-pressure"><div class="empty" hidden>No readings in this range</div></div>
-      <h3 class="chart-title">Temperature</h3>
-      <div class="chart" id="chart-temp"><div class="empty" hidden>No readings in this range</div></div>
-      <p class="chart-foot">
-        <span class="hint">Drag to zoom, double-click to reset. Dashed lines are notes.</span>
-        <a id="export" href="/api/export.csv" download>Download CSV for this range</a>
-      </p>
-    </section>
 
-    <section class="panel balls" aria-labelledby="balls-title">
-      <div class="panel-head">
-        <h2 id="balls-title">Balls</h2>
-        <div class="head-actions">
-          <div class="seg" id="length-units" role="group" aria-label="Length units">
-            <button type="button" data-value="in">in</button>
-            <button type="button" data-value="cm">cm</button>
+      <section class="panel" aria-labelledby="pressure-title">
+        <h2 id="pressure-title">Pressure</h2>
+        <div class="chart" id="chart-pressure"><div class="empty" hidden>No readings in this range</div></div>
+        <h3 class="chart-title">Temperature</h3>
+        <div class="chart" id="chart-temp"><div class="empty" hidden>No readings in this range</div></div>
+        <p class="chart-foot">
+          <span class="hint">Drag to zoom, double-click to reset. Dashed lines are notes and charge sessions.</span>
+          <a id="export" href="/api/export.csv" download>Download CSV for this range</a>
+        </p>
+      </section>
+
+      <div class="split">
+        <section class="panel" aria-labelledby="notes-title">
+          <h2 id="notes-title">Notes</h2>
+          <p class="hint">Mark what you did to a canister. Notes show on the charts.</p>
+          <form id="event-form" class="event-form">
+            <select id="event-mac" aria-label="Canister"><option value="">All canisters</option></select>
+            <select id="event-kind" aria-label="Kind">
+              <option value="note">Note</option>
+              <option value="fill">Filled</option>
+              <option value="leak_test">Leak test (filled, no balls)</option>
+              <option value="vent">Vented</option>
+              <option value="balls_added">Balls added</option>
+              <option value="balls_removed">Balls removed</option>
+            </select>
+            <input id="event-note" type="text" maxlength="1000" placeholder="e.g. filled to 30 psi" aria-label="Note">
+            <input id="event-when" type="datetime-local" aria-label="When (leave empty for now)" title="When (leave empty for now)">
+            <button type="submit" class="primary">Add note</button>
+            <span class="form-error" id="event-error" role="alert"></span>
+          </form>
+          <ul class="events" id="events"></ul>
+        </section>
+
+        <section class="panel" aria-labelledby="table-title">
+          <div class="panel-head">
+            <h2 id="table-title">Readings</h2>
+            <select id="table-mac" aria-label="Canister"><option value="">All canisters</option></select>
           </div>
-          <button type="button" class="primary" id="batch-new">New batch</button>
-        </div>
+          <div class="table-wrap">
+            <table class="readings">
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Canister</th>
+                  <th scope="col" class="num" id="th-pressure">Pressure</th>
+                  <th scope="col" class="num" id="th-other">Compensated</th>
+                  <th scope="col" class="num" id="th-temp">Temp</th>
+                  <th scope="col" class="num">Battery</th>
+                </tr>
+              </thead>
+              <tbody id="table-body"></tbody>
+            </table>
+          </div>
+          <p class="table-foot">
+            <span class="hint" id="table-count"></span>
+            <button type="button" id="table-more" hidden>Load more</button>
+          </p>
+        </section>
       </div>
-      <p class="hint" id="balls-setup-hint" hidden>Start by adding a test setup below: the drop height and surface you'll always test with.</p>
-      <div class="batches" id="batches"></div>
-      <label class="toggle small" id="show-retired-wrap" hidden><input type="checkbox" id="show-retired"> Show retired batches</label>
-      <p class="form-error" id="balls-error" role="alert"></p>
+    </div>
 
-      <details class="sub" id="setups-box">
-        <summary>Test setups</summary>
+    <!-- Balls: one batch at a time, with everything recorded about it. -->
+    <div class="view" id="view-balls" hidden>
+      <div class="balls-layout">
+        <aside class="batch-nav" aria-labelledby="batch-nav-title">
+          <div class="section-head">
+            <h2 id="batch-nav-title">Batches</h2>
+            <button type="button" class="primary batch-new">New batch</button>
+          </div>
+          <nav class="batch-list" id="batch-list" aria-label="Ball batches"></nav>
+          <label class="toggle small" id="show-retired-wrap" hidden><input type="checkbox" id="show-retired"> Show retired batches</label>
+        </aside>
+        <div class="batch-detail" id="batch-detail"></div>
+      </div>
+    </div>
+
+    <!-- Setup: things you set once. -->
+    <div class="view narrow" id="view-setup" hidden>
+      <section class="panel" aria-labelledby="units-title">
+        <h2 id="units-title">Units</h2>
+        <div class="unit-rows">
+          <div class="unit-row">
+            <span id="units-label">Pressure</span>
+            <div class="seg" id="units" role="group" aria-labelledby="units-label">
+              <button type="button" data-value="psi">psi</button>
+              <button type="button" data-value="kPa">kPa</button>
+              <button type="button" data-value="bar">bar</button>
+            </div>
+          </div>
+          <div class="unit-row">
+            <span id="temp-units-label">Temperature</span>
+            <div class="seg" id="temp-units" role="group" aria-labelledby="temp-units-label">
+              <button type="button" data-value="F">°F</button>
+              <button type="button" data-value="C">°C</button>
+            </div>
+          </div>
+          <div class="unit-row">
+            <span id="length-units-label">Bounce heights</span>
+            <div class="seg" id="length-units" role="group" aria-labelledby="length-units-label">
+              <button type="button" data-value="in">in</button>
+              <button type="button" data-value="cm">cm</button>
+            </div>
+          </div>
+        </div>
+        <p class="hint">Remembered in this browser.</p>
+      </section>
+
+      <section class="panel" id="setups-box" aria-labelledby="setups-title">
+        <h2 id="setups-title">Test setups</h2>
         <p class="hint">How you test: drop height and surface. Pick one and keep using it, so tests compare. A setup can't be changed once used, except its mid mark: the second mark on the wall that the video app calibrates with, near typical rebound heights.</p>
         <ul class="mini" id="setups"></ul>
         <form id="setup-form" class="inline-form">
@@ -79,13 +176,13 @@
           <span class="with-unit"><input id="setup-mid" inputmode="decimal" placeholder="Mid mark (video)" aria-label="Mid mark for video, optional"><span class="len-unit"></span></span>
           <label class="toggle"><input type="checkbox" id="setup-itf"> ITF method: 100 in onto concrete</label>
           <input id="setup-note" maxlength="1000" placeholder="Note (optional)" aria-label="Note">
-          <button type="submit">Add setup</button>
+          <button type="submit" class="primary">Add setup</button>
           <span class="form-error" id="setup-error" role="alert"></span>
         </form>
-      </details>
+      </section>
 
-      <details class="sub">
-        <summary>New-ball reference values</summary>
+      <section class="panel" aria-labelledby="refs-title">
+        <h2 id="refs-title">New-ball reference values</h2>
         <p class="hint">Like-new compares against new balls tested the same way: a batch's own new-ball tests, then other batches of the same brand and model. Enter a value here for balls you never tested new. To set one for a single batch, edit the batch.</p>
         <ul class="mini" id="references"></ul>
         <form id="ref-form" class="inline-form">
@@ -93,13 +190,13 @@
           <input id="ref-model" list="model-list" maxlength="60" placeholder="Model" aria-label="Model" required>
           <select id="ref-setup" aria-label="Setup" required></select>
           <span class="with-unit"><input id="ref-rebound" inputmode="decimal" placeholder="New-ball rebound" aria-label="New-ball rebound" required><span class="len-unit"></span></span>
-          <button type="submit">Save value</button>
+          <button type="submit" class="primary">Save value</button>
           <span class="form-error" id="ref-error" role="alert"></span>
         </form>
-      </details>
+      </section>
 
-      <details class="sub">
-        <summary>ITF conversion</summary>
+      <section class="panel" aria-labelledby="conv-title">
+        <h2 id="conv-title">ITF conversion</h2>
         <p class="hint">Only needed when your setup isn't the ITF method. On one day, drop about 10 balls, from new to flat, both your way and from 100 in onto concrete. Enter one pair per ball.</p>
         <ul class="mini" id="conversions"></ul>
         <p class="hint" id="conv-none" hidden>All your setups are already the ITF method.</p>
@@ -107,62 +204,24 @@
           <select id="conv-setup" aria-label="Your setup" required></select>
           <span class="with-unit"><input id="conv-rebound" inputmode="decimal" placeholder="Your rebound" aria-label="Rebound at your setup" required><span class="len-unit"></span></span>
           <span class="with-unit"><input id="conv-itf" inputmode="decimal" placeholder="ITF rebound" aria-label="Rebound from 100 in onto concrete" required><span class="len-unit"></span></span>
-          <button type="submit">Add pair</button>
+          <button type="submit" class="primary">Add pair</button>
           <span class="form-error" id="conv-error" role="alert"></span>
         </form>
-      </details>
+      </section>
 
-      <p class="chart-foot"><a id="bounce-export" href="/api/bounce.csv" download>Download bounce data (CSV)</a></p>
+      <section class="panel" aria-labelledby="data-title">
+        <h2 id="data-title">Your data</h2>
+        <ul class="mini">
+          <li><span>Every bounce test, drop by drop</span><a id="bounce-export" href="/api/bounce.csv" download>Download CSV</a></li>
+          <li><span>Pressure readings, for a time range you choose</span><a href="#pressure">Go to Pressure</a></li>
+        </ul>
+      </section>
       <datalist id="brand-list"></datalist>
       <datalist id="model-list"></datalist>
-    </section>
-
-    <section class="panel" aria-labelledby="table-title">
-      <div class="panel-head">
-        <h2 id="table-title">Readings</h2>
-        <select id="table-mac" aria-label="Canister"><option value="">All canisters</option></select>
-      </div>
-      <div class="table-wrap">
-        <table class="readings">
-          <thead>
-            <tr>
-              <th scope="col">Time</th>
-              <th scope="col">Canister</th>
-              <th scope="col" class="num" id="th-pressure">Pressure</th>
-              <th scope="col" class="num" id="th-other">Compensated</th>
-              <th scope="col" class="num" id="th-temp">Temp</th>
-              <th scope="col" class="num">Battery</th>
-            </tr>
-          </thead>
-          <tbody id="table-body"></tbody>
-        </table>
-      </div>
-      <p class="table-foot">
-        <span class="hint" id="table-count"></span>
-        <button type="button" id="table-more" hidden>Load more</button>
-      </p>
-    </section>
-
-    <section class="panel" aria-labelledby="notes-title">
-      <h2 id="notes-title">Notes</h2>
-      <form id="event-form" class="event-form">
-        <select id="event-mac" aria-label="Canister"><option value="">All canisters</option></select>
-        <select id="event-kind" aria-label="Kind">
-          <option value="note">Note</option>
-          <option value="fill">Filled</option>
-          <option value="leak_test">Leak test (filled, no balls)</option>
-          <option value="vent">Vented</option>
-          <option value="balls_added">Balls added</option>
-          <option value="balls_removed">Balls removed</option>
-        </select>
-        <input id="event-note" type="text" maxlength="1000" placeholder="e.g. filled to 30 psi" aria-label="Note">
-        <input id="event-when" type="datetime-local" aria-label="When (leave empty for now)" title="When (leave empty for now)">
-        <button type="submit">Add</button>
-        <span class="form-error" id="event-error" role="alert"></span>
-      </form>
-      <ul class="events" id="events"></ul>
-    </section>
+    </div>
   </main>
+
+  <footer class="page-foot">Canister Monitor {{ version }}</footer>
 
   <dialog id="batch-dialog" aria-labelledby="batch-title">
     <form id="batch-form" class="dialog-form">

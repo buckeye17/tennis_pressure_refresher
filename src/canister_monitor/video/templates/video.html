@@ -3,12 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Ball Bounce Tracker</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='video.css') }}">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='video.css', v=version) }}">
 </head>
 <body>
   <header class="top">
     <h1>Ball Bounce Tracker</h1>
+    <ol class="steps" id="steps" aria-label="Steps of a test">
+      <li data-step="1"><span class="n">1</span>Set up</li>
+      <li data-step="2"><span class="n">2</span>Measure</li>
+      <li data-step="3"><span class="n">3</span>Review and save</li>
+    </ol>
     <div class="top-right">
       <span id="pi-status" class="pill">Pi: checking…</span>
       <button id="pi-retry" class="link" type="button" hidden>Retry</button>
@@ -19,11 +26,22 @@
     </div>
   </header>
 
-  <main id="main">
-    <!-- Left: set-up and sources, live controls, or the review summary. -->
+  <main id="main" data-phase="idle">
+    <div id="notice" class="notice" hidden></div>
+
+    <section id="error-card" class="card" hidden>
+      <h2>Something went wrong</h2>
+      <p id="error-text" class="error"></p>
+      <div class="actions">
+        <button id="error-reanalyse" type="button" hidden>Analyse again…</button>
+        <button id="error-back" type="button">Start over</button>
+      </div>
+    </section>
+
+    <!-- Left: what to fill in or do at this step. -->
     <aside class="side">
       <section id="setup-card" class="card">
-        <h2>1. Set up</h2>
+        <h2>What you're testing</h2>
         <div id="pi-fields">
           <label>Batch
             <select id="batch"></select>
@@ -55,11 +73,11 @@
       </section>
 
       <section id="source-card" class="card">
-        <h2>2. Source</h2>
-        <h3>Webcam</h3>
+        <h2>Where the video comes from</h2>
+        <h3>A webcam, live</h3>
         <div id="cameras" class="cameras"><p class="muted small">Looking for cameras…</p></div>
         <button id="cameras-refresh" class="link small" type="button">Look again</button>
-        <h3>Phone clip</h3>
+        <h3>A clip from your phone</h3>
         <label id="dropzone" class="dropzone">
           <input id="clip-file" type="file" accept="video/*" hidden>
           <span>Drop a clip here, or <u>choose a file</u></span>
@@ -77,53 +95,62 @@
           <div id="prompt-warn" class="warn" hidden></div>
         </div>
         <div id="live-status" class="status small"></div>
-        <div id="rotation-field" hidden>
-          <label>Rotate picture
-            <select id="rotation">
-              <option value="0">No rotation</option>
-              <option value="270">90° left (counterclockwise)</option>
-              <option value="90">90° right (clockwise)</option>
-              <option value="180">180°</option>
-            </select>
-          </label>
-          <p class="muted small">If the camera is on its side, turn the picture until the floor is
-            at the bottom.</p>
-        </div>
-        <div id="framing-actions" class="actions">
-          <button id="start" class="primary" type="button">Start session</button>
-          <button id="close-camera" type="button">Close camera</button>
-        </div>
+
         <div id="live-actions" class="actions" hidden>
-          <button data-cmd="undo" type="button" title="U">Undo last drop</button>
-          <button data-cmd="next_ball" type="button" title="N">Next ball</button>
-          <button data-cmd="recalibrate" type="button" title="R">Recalibrate</button>
-          <button data-cmd="finish" class="primary" type="button" title="F">Finish</button>
+          <button data-cmd="next_ball" type="button">Next ball <kbd>N</kbd></button>
+          <button data-cmd="undo" type="button">Undo last drop <kbd>U</kbd></button>
+          <button data-cmd="recalibrate" type="button">Recalibrate <kbd>R</kbd></button>
+          <button data-cmd="finish" class="primary" type="button">Finish <kbd>F</kbd></button>
         </div>
         <div id="analysing" hidden>
           <progress id="analyse-bar" max="1" value="0"></progress>
           <span id="analyse-text" class="small muted"></span>
           <div class="actions"><button id="cancel" type="button">Cancel</button></div>
         </div>
-        <div id="area-controls" class="area-controls" hidden></div>
-        <p class="muted small" id="pick-hint">Click the ball in the picture to teach the app its
-          colour if it isn't outlined.</p>
+
         <table id="live-drops" class="drops">
           <thead><tr><th>Ball</th><th>Drop</th><th class="num">Rebound</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
         <p id="provisional" class="muted small" hidden>Heights are provisional until Finish, when
           the drop mark is re-anchored on all releases.</p>
+
+        <div id="picture-tools" class="tools">
+          <h3>The picture</h3>
+          <div id="rotation-field" hidden>
+            <label>Rotate
+              <select id="rotation">
+                <option value="0">No rotation</option>
+                <option value="270">90° left (counterclockwise)</option>
+                <option value="90">90° right (clockwise)</option>
+                <option value="180">180°</option>
+              </select>
+            </label>
+            <p class="muted small">If the camera is on its side, turn the picture until the floor is
+              at the bottom.</p>
+          </div>
+          <p class="muted small" id="pick-hint">Click the ball in the picture to teach the app its
+            colour if it isn't outlined.</p>
+          <div id="area-controls" class="area-controls" hidden></div>
+        </div>
+
+        <div id="framing-actions" class="actions">
+          <button id="start" class="primary" type="button">Start session</button>
+          <button id="close-camera" type="button">Close camera</button>
+        </div>
       </section>
 
       <section id="review-card" class="card" hidden>
-        <h2>Review</h2>
+        <h2>Result</h2>
         <p id="review-what" class="small muted"></p>
+        <p id="review-mean" class="mean"></p>
+        <p id="review-fit" class="small muted"></p>
         <table id="medians" class="drops">
           <thead><tr><th>Ball</th><th class="num">Median</th><th class="num">Drops</th></tr></thead>
           <tbody></tbody>
         </table>
-        <p id="review-mean" class="mean"></p>
-        <p id="review-fit" class="small muted"></p>
+
+        <h3>Save this test</h3>
         <div id="save-fields">
           <label for="save-temp">Room temperature</label>
           <div class="with-select">
@@ -138,13 +165,16 @@
             <input id="save-note" maxlength="1000">
           </label>
         </div>
-        <div class="actions column">
-          <button id="save-pi" class="primary" type="button">Save to Pi</button>
+        <button id="save-pi" class="primary block" type="button">Save to Pi</button>
+        <p id="save-status" class="small" hidden></p>
+        <div class="actions">
           <a id="download" class="button" href="/api/review.json" download>Download JSON</a>
           <button id="reanalyse-open" type="button">Analyse again…</button>
-          <button id="new-session" type="button">New session</button>
         </div>
-        <p id="save-status" class="small" hidden></p>
+
+        <div class="card-foot">
+          <button id="new-session" class="block" type="button">New session</button>
+        </div>
       </section>
 
       <section id="outbox-card" class="card" hidden>
@@ -156,41 +186,62 @@
         <div class="actions"><button id="outbox-send" class="primary" type="button">Send
             now</button></div>
       </section>
-
-      <section id="error-card" class="card" hidden>
-        <h2>Something went wrong</h2>
-        <p id="error-text" class="error"></p>
-        <div class="actions">
-          <button id="error-reanalyse" type="button" hidden>Analyse again…</button>
-          <button id="error-back" type="button">Start over</button>
-        </div>
-      </section>
     </aside>
 
-    <!-- Right: the preview, or the review table. -->
+    <!-- Right: how to film, then the camera picture, then the drops to check. -->
     <section class="stage">
-      <div id="notice" class="notice" hidden></div>
-      <div id="preview-wrap" class="preview-wrap">
+      <div id="placeholder" class="card guide">
+        <h2>How to film a test</h2>
+        <svg class="guide-art" viewBox="0 0 450 236" role="img"
+          aria-label="Side view: the camera stands 2 to 3 metres from the drop line and sees the floor, the mid mark and the drop mark.">
+          <path class="fov" d="M76 124 L352 6 L352 204 Z"/>
+          <line class="ln" x1="10" y1="204" x2="440" y2="204"/>
+          <line class="ln dash" x1="352" y1="14" x2="352" y2="204"/>
+          <line class="ln" x1="338" y1="44" x2="366" y2="44"/>
+          <line class="ln" x1="338" y1="128" x2="366" y2="128"/>
+          <circle class="ball" cx="352" cy="33" r="11"/>
+          <circle class="ball ghost" cx="352" cy="117" r="11"/>
+          <circle class="ball ghost" cx="352" cy="193" r="11"/>
+          <text x="374" y="48">Drop mark</text>
+          <text x="374" y="132">Mid mark</text>
+          <text x="374" y="198">Floor</text>
+          <rect class="cam" x="42" y="111" width="34" height="26" rx="5"/>
+          <circle class="lens" cx="76" cy="124" r="6"/>
+          <path class="ln" d="M59 137 L59 160 M59 160 L44 204 M59 160 L74 204 M59 160 L59 204"/>
+          <path class="ln thin" d="M59 218 L352 218 M59 213 L59 223 M352 213 L352 223"/>
+          <text x="205" y="233" text-anchor="middle">2–3 m</text>
+        </svg>
+        <ol class="guide-steps">
+          <li>Stand the camera somewhere steady, 2–3 m from the drop line, with the whole drop and
+            the floor in view.</li>
+          <li>Start with three holds of about 2 seconds: the ball still on the floor, at the mid
+            mark, then at the drop mark.</li>
+          <li>Drop each ball in number order, the same number of times, and catch it after its
+            first bounce.</li>
+        </ol>
+        <p class="muted small">Ready? Check what you're testing, then pick a webcam or a clip.</p>
+      </div>
+
+      <div id="preview-wrap" class="preview-wrap" hidden>
         <div id="preview-frame" class="area-frame" hidden>
           <img id="preview" alt="Camera preview: click the ball to teach its colour">
         </div>
-        <div id="placeholder" class="placeholder">
-          <p>Pick a webcam or drop a phone clip on the left.</p>
-          <p class="muted small">Set up: camera steady 2–3 m from the drop line, the whole drop and
-            the floor in view. Start with three holds: the ball still on the floor, at the mid
-            mark, at the drop mark. Then drop each ball in number order and catch it after its
-            first bounce.</p>
-        </div>
       </div>
-      <div id="review-wrap" hidden>
-        <table id="review" class="review">
-          <thead>
-            <tr><th>Picture</th><th>Ball</th><th class="num">Measured</th>
-              <th class="num" title="How far the ball was at the top from the line its fall followed. A ball that bounces off at an angle may also have moved toward or away from the camera, which moves the reading.">Sideways</th><th>Height</th>
-              <th>Keep</th><th>Warnings</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+
+      <div id="review-wrap" class="card" hidden>
+        <h2>Check each drop</h2>
+        <p class="muted small">Click a picture to enlarge it. Correct a height, move a drop to
+          another ball, or untick Keep to leave it out of the result.</p>
+        <div class="table-scroll">
+          <table id="review" class="review">
+            <thead>
+              <tr><th>Picture</th><th>Ball</th><th class="num">Measured</th>
+                <th class="num" title="How far the ball was at the top from the line its fall followed. A ball that bounces off at an angle may also have moved toward or away from the camera, which moves the reading.">Sideways</th><th>Height</th>
+                <th>Keep</th><th>Warnings</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </section>
   </main>
@@ -223,6 +274,6 @@
   </dialog>
 
   <footer class="foot muted small">Ball Bounce Tracker {{ version }} · on this laptop only</footer>
-  <script src="{{ url_for('static', filename='video.js') }}"></script>
+  <script src="{{ url_for('static', filename='video.js', v=version) }}"></script>
 </body>
 </html>

@@ -337,6 +337,7 @@ dB/dt = k * (B_eq(P) - B),   B_eq(P) = a + b * P
 **The laptop web app, Ball Bounce Tracker** (`video/app.py`).
 - `ball-bounce-tracker` with no arguments starts a small Flask server on the laptop and opens it in the browser. It listens on `http://127.0.0.1:5100`, the laptop only (`--port`). `--pi URL` sets the Pi (default `http://canisters.local:5000`); `--no-browser` skips opening the browser.
 - One session at a time. A background worker runs capture and analysis (`pipeline.Analyzer`, the same code as for clips). The page polls `/api/state` a few times a second for status, drops and progress, and shows the preview from `/preview.mjpg`.
+- The page shows three steps at the top, **Set up**, **Measure** and **Review and save**, and lays itself out for the one in progress (`main[data-phase]`): the set-up form and sources beside a how-to-film diagram; then the camera picture beside the prompt, drops and picture tools; then the result and Save beside the drops to check.
 - **1. Set up.** The page shows whether the Pi is reachable. Pick the batch and setup from the Pi's lists; drop height and mid mark come from the setup. Drops per ball defaults to 3.
 - **2. Source.**
   - **A webcam:** OpenCV can't list camera names, so indices 0–4 are probed and shown with the size each delivers.
@@ -785,8 +786,14 @@ Validate query params; return 400 with `{"error": "..."}` on bad input (404 for 
 
 Plain HTML/CSS/vanilla JS. No build step. uPlot vendored at `static/vendor/uplot/` (JS + CSS, pinned version, license file included).
 
-Layout:
-1. **Header:** title, units selector (psi / kPa / bar), temperature units (°F / °C; defaults to °F for en-US browsers, since the vendor app shows °F), "Raw vs temperature-compensated" toggle, auto-refresh indicator.
+Layout: four tabs beside the title, with the auto-refresh indicator. The address names the tab (`#pressure`, or `#balls/3` for a batch), so Back works and a tab can be bookmarked. Charts are drawn when their tab opens, since a hidden chart has no width.
+- **Overview:** what to look at and do now. The canister cards (2), then a card per batch that isn't retired: its advice (§6.4), latest test, and **Bounce test**, **Start / End charge session** and **Log play**.
+- **Pressure:** the time range and the "Raw vs temperature-compensated" toggle, which apply to the whole tab, then the charts (3, 4), the events panel (5) beside the readings table, and the export link (6).
+- **Balls:** a list of batches beside one batch's page: summary and advice, bounce over time, bounce tests, charge sessions, play. Edit, Retire and Delete are on that page.
+- **Setup:** what is set once. Units (psi / kPa / bar; °F / °C, defaulting to °F for en-US browsers, since the vendor app shows °F; in / cm), test setups, new-ball reference values, the ITF conversion, and the bounce CSV.
+
+The pieces:
+1. **Header:** title, tabs, auto-refresh indicator.
 2. **Canister cards:** one per sensor. Large current gauge pressure, compensated pressure beneath, temperature, battery, RSSI, "updated 4 min ago". Card turns amber when stale. Unassigned sensors show their MAC and a hint to add them to `config.toml`.
 3. **Chart:** all canisters overlaid, one line each. Time range buttons: 6 h, 24 h, 3 d, 7 d, All. Lines drawn as steps (value holds until next reading). Event annotations drawn as vertical markers with tooltips.
 4. **Temperature chart:** smaller chart below, same time axis, so temperature-driven swings are obvious.
@@ -1055,7 +1062,7 @@ Next, in order. Data collection comes first because it takes the longest:
   - Migration 6 and `db` functions for sessions and play. `batch_locations`, `latest_fill_ts` and `leak_test_spans` take sessions into account.
   - `web/charge_api.py`: the endpoints in §9.3. A finished session's readings are kept between requests, since they can't change.
   - Dashboard:
-    - Each batch card has an advice box, and **Start / End charge session**, **Log play** and **Show history** buttons.
+    - Each batch card has an advice box, and **Start / End charge session** and **Log play** buttons. The batch's page on the Balls tab shows its history.
     - History is a chart of bounce as a share of new (tests, the estimate, time in a canister shaded, the like-new band, play) over a table of sessions and a list of play.
     - Tests show their share of new, in the latest-test line and the tests table.
     - A canister's card names the batch inside and what to do; the pressure chart marks session starts and ends.

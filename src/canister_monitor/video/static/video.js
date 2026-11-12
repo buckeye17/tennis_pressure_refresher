@@ -204,7 +204,12 @@
   }
 
   function params() {
-    const err = (msg) => { $("#setup-error").textContent = msg; $("#setup-error").hidden = false; return null; };
+    const err = (msg) => {
+      $("#setup-error").textContent = msg;
+      $("#setup-error").hidden = false;
+      $("#setup-error").scrollIntoView({ block: "nearest" });
+      return null;
+    };
     $("#setup-error").hidden = true;
     const online = !!ui.pi?.ok;
     const s = online ? setup() : null;
@@ -303,7 +308,14 @@
     $("#live-card").hidden = !running;
     $("#review-card").hidden = phase !== "review";
     $("#error-card").hidden = phase !== "error";
-    $("#main").classList.toggle("wide", phase === "review");
+    $("#main").dataset.phase = phase; // the layout follows the phase (video.css)
+    const step = sourcing ? 1 : phase === "review" ? 3 : 2;
+    for (const li of document.querySelectorAll("#steps li")) {
+      const n = +li.dataset.step;
+      li.classList.toggle("done", n < step);
+      if (n === step) li.setAttribute("aria-current", "step");
+      else li.removeAttribute("aria-current");
+    }
     $("#notice").hidden = !st.notice;
     $("#notice").textContent = st.notice || "";
 
@@ -327,9 +339,9 @@
       else img.src = `/preview.mjpg?session=${want}`;
     }
     $("#preview-frame").hidden = want == null;
-    $("#placeholder").hidden = want != null;
+    $("#preview-wrap").hidden = want == null;
+    $("#placeholder").hidden = st.phase !== "idle"; // how to film, until a source is picked
     previewArea.show(st.area ?? null);
-    $("#preview-wrap").hidden = st.phase === "review";
     $("#review-wrap").hidden = st.phase !== "review";
   }
 
@@ -339,7 +351,7 @@
     $("#live-actions").hidden = phase !== "live";
     $("#analysing").hidden = phase !== "analysing";
     $("#provisional").hidden = phase !== "live";
-    $("#pick-hint").hidden = phase === "analysing";
+    $("#picture-tools").hidden = phase === "analysing";
     const canDraw = st.kind === "camera" && (phase === "framing" || phase === "live");
     $("#area-controls").hidden = !canDraw;
     if (!canDraw) previewArea.cancel();

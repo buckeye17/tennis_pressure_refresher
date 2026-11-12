@@ -78,7 +78,7 @@ def test_dashboard_assets_are_local_and_served(client):
     assert refs, "page references no assets?"
     for ref in refs:
         assert not re.match(r"^(https?:)?//", ref), f"external reference: {ref}"
-        if ref.startswith("data:"):
+        if ref.startswith(("data:", "#")):  # inline data, or a link to one of the page's tabs
             continue
         assert client.get(ref).status_code == 200, ref
     assert any("uPlot.iife.min.js" in r for r in refs)

@@ -10,6 +10,7 @@
   --warn-bg: #fff7e6;
   --danger: #b91c1c;
   --ok: #15803d;
+  --ball: #c9d400;
   --radius: 10px;
   color-scheme: light;
 }
@@ -27,6 +28,7 @@
     --warn-bg: #2b2414;
     --danger: #f87171;
     --ok: #4ade80;
+    --ball: #d7e03a;
     color-scheme: dark;
   }
 }
@@ -42,9 +44,9 @@ body {
 }
 
 h1, h2, h3 { margin: 0; font-weight: 600; }
-h1 { font-size: 1.2rem; }
-h2 { font-size: 1.02rem; margin-bottom: 10px; }
-h3 { font-size: 0.85rem; color: var(--muted); margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 0.03em; }
+h1 { font-size: 1.15rem; }
+h2 { font-size: 1.05rem; margin-bottom: 10px; }
+h3 { font-size: 0.9rem; margin: 16px 0 6px; }
 
 button, input, select { font: inherit; color: inherit; }
 
@@ -53,20 +55,37 @@ button, input, select { font: inherit; color: inherit; }
 .error { color: var(--danger); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
-/* --- header ---------------------------------------------------------------- */
+/* --- header and steps ------------------------------------------------------ */
 
 .top {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
+  gap: 8px 24px;
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
-.top-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.top-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+
+/* Where you are in a test: set up, measure, review and save. */
+.steps { display: flex; align-items: center; list-style: none; margin: 0; padding: 0; color: var(--muted); font-size: 0.9rem; }
+.steps li { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.steps li + li::before { content: ""; width: 22px; height: 1px; margin: 0 4px 0 10px; background: var(--border); }
+.steps .n {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.steps li[aria-current] { color: var(--text); font-weight: 600; }
+.steps li[aria-current] .n { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.steps li.done .n { border-color: var(--ok); color: var(--ok); }
 
 .pill {
   font-size: 0.85rem;
@@ -78,27 +97,44 @@ button, input, select { font: inherit; color: inherit; }
 .pill.bad { color: var(--danger); border-color: currentColor; }
 
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.seg button { border: 0; background: transparent; padding: 3px 10px; cursor: pointer; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 3px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
 .seg button.on { background: var(--accent); color: var(--accent-text); }
 
-/* --- layout ---------------------------------------------------------------- */
+/* --- layout: follows the phase (main[data-phase], set by video.js) ----------- */
 
 main {
   display: grid;
-  grid-template-columns: minmax(300px, 360px) 1fr;
+  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
   gap: 16px;
   padding: 16px;
   align-items: start;
+  margin: 0 auto;
+  max-width: 1600px;
 }
+main > .notice, main > #error-card { grid-column: 1 / -1; }
 
-main.wide { grid-template-columns: minmax(260px, 300px) 1fr; }
-
-@media (max-width: 860px) {
-  main, main.wide { grid-template-columns: 1fr; }
-}
+/* Set up: the form beside how to film. Nothing to watch yet, so keep it compact. */
+main[data-phase="idle"] { max-width: 1080px; }
+/* Review: the drops need the room. */
+main[data-phase="review"] { grid-template-columns: minmax(270px, 330px) minmax(0, 1fr); }
+/* An error stands alone. */
+main[data-phase="error"] { grid-template-columns: minmax(0, 560px); justify-content: center; }
+main[data-phase="error"] .side, main[data-phase="error"] .stage { display: none; }
+/* Framing: the shot first, then a last look at what's being tested. */
+main[data-phase="framing"] #setup-card { order: 2; }
 
 .side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .stage { min-width: 0; }
+
+@media (min-width: 861px) {
+  /* The result and Save stay in reach while you go down the drops. */
+  main[data-phase="review"] .side { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
+}
+
+@media (max-width: 860px) {
+  main, main[data-phase="review"] { grid-template-columns: minmax(0, 1fr); }
+}
 
 .card {
   background: var(--panel);
@@ -106,6 +142,7 @@ main.wide { grid-template-columns: minmax(260px, 300px) 1fr; }
   border-radius: var(--radius);
   padding: 14px 16px;
 }
+.card-foot { margin: 14px -16px 0; padding: 12px 16px 0; border-top: 1px solid var(--border); }
 
 label { display: block; margin-bottom: 10px; font-size: 0.9rem; color: var(--muted); }
 label > input, label > select {
@@ -116,6 +153,7 @@ label > input, label > select {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg);
+  color: var(--text);
 }
 
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -128,7 +166,9 @@ label[for] { margin-bottom: 3px; }
   background: var(--bg);
 }
 .with-select input { flex: 1; min-width: 0; }
+#setup-note:empty { display: none; }
 #save-temp-note { margin: 0 0 10px; }
+#save-status { margin: 8px 0 0; }
 #save-status.ok { color: var(--ok); }
 #save-status.warn { color: var(--warn); }
 .outbox { list-style: none; margin: 8px 0; padding: 0; font-size: 0.9rem; }
@@ -149,29 +189,58 @@ button:hover:not(:disabled), a.button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 button.link { border: 0; background: none; color: var(--accent); padding: 2px 0; }
+button.block { display: block; width: 100%; }
+kbd {
+  margin-left: 4px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: 600 0.72rem/1.5 inherit;
+  font-family: inherit;
+  opacity: 0.65;
+}
 
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
-.actions.column { flex-direction: column; }
+.actions > * { flex: 1 1 auto; }
 
 /* --- sources ----------------------------------------------------------------- */
 
 .cameras { display: flex; flex-direction: column; gap: 6px; }
-.cameras button { text-align: left; display: flex; justify-content: space-between; gap: 8px; }
+.cameras button { text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.cameras p { margin: 0; }
 
 .dropzone {
   display: block;
   padding: 18px 12px;
+  margin: 0;
   border: 2px dashed var(--border);
   border-radius: var(--radius);
   text-align: center;
   cursor: pointer;
   color: var(--muted);
 }
-.dropzone.over { border-color: var(--accent); color: var(--accent); }
+.dropzone:hover, .dropzone.over { border-color: var(--accent); color: var(--accent); }
+#upload { margin-top: 8px; }
 
 progress { width: 100%; height: 10px; }
 
-/* --- live --------------------------------------------------------------------------- */
+/* --- how to film ------------------------------------------------------------- */
+
+.guide-art { display: block; width: 100%; max-width: 520px; margin: 4px auto 10px; }
+.guide-art text { fill: var(--muted); font-size: 12px; }
+.guide-art .ln { stroke: var(--muted); stroke-width: 1.5; fill: none; stroke-linecap: round; }
+.guide-art .ln.dash { stroke-dasharray: 4 4; }
+.guide-art .ln.thin { stroke-width: 1; }
+.guide-art .fov { fill: var(--accent); opacity: 0.1; }
+.guide-art .ball { fill: var(--ball); stroke: var(--muted); stroke-width: 1; }
+.guide-art .ball.ghost { fill-opacity: 0.35; stroke-dasharray: 3 3; }
+.guide-art .cam { fill: var(--panel); stroke: var(--text); stroke-width: 1.5; }
+.guide-art .lens { fill: var(--text); }
+.guide-steps { margin: 0 0 10px; padding-left: 22px; }
+.guide-steps li { margin-bottom: 6px; }
+.guide p { margin: 0; }
+
+/* --- measuring ----------------------------------------------------------------- */
 
 .prompt { margin-bottom: 8px; }
 .prompt-text { font-size: 1.45rem; font-weight: 650; line-height: 1.2; }
@@ -184,21 +253,24 @@ progress { width: 100%; height: 10px; }
   color: var(--warn);
   font-size: 0.9rem;
 }
-.notice { margin: 0 0 12px; }
+.notice { margin: 0; }
 
 .status { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); }
 .status .bad { color: var(--warn); }
 .status .good { color: var(--ok); }
 
+.tools { margin-top: 14px; padding-top: 2px; border-top: 1px solid var(--border); }
+.tools p { margin: 0 0 8px; }
+
 table.drops { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
 table.drops th, table.drops td { padding: 3px 6px; border-bottom: 1px solid var(--border); text-align: left; }
 table.drops th { color: var(--muted); font-weight: 500; }
+table.drops th.num, table.drops td.num { text-align: right; }
 table.drops tr.newball td { border-top: 2px solid var(--border); }
 .warn-icon { color: var(--warn); cursor: help; }
 
-.mean { font-size: 1.1rem; font-weight: 600; margin: 10px 0 0; }
-
-/* --- the stage -------------------------------------------------------------------- */
+.mean { font-size: 1.15rem; font-weight: 600; margin: 8px 0 2px; }
+#review-what, #review-fit { margin: 0; }
 
 .preview-wrap {
   background: #000;
@@ -209,13 +281,16 @@ table.drops tr.newball td { border-top: 2px solid var(--border); }
   align-items: center;
   min-height: 360px;
 }
-#preview { display: block; max-width: 100%; max-height: calc(100vh - 140px); cursor: crosshair; }
-.placeholder { color: #c9d1db; padding: 40px; max-width: 560px; text-align: center; }
-.placeholder .muted { color: #8b97a6; }
+#preview { display: block; max-width: 100%; max-height: calc(100vh - 110px); cursor: crosshair; }
 
-table.review { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: var(--radius); overflow: hidden; }
+/* --- review ------------------------------------------------------------------------ */
+
+#review-wrap > p { margin: 0 0 10px; }
+.table-scroll { overflow-x: auto; }
+table.review { width: 100%; border-collapse: collapse; }
 table.review th, table.review td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
-table.review th { color: var(--muted); font-weight: 500; font-size: 0.85rem; position: sticky; top: 0; background: var(--panel); }
+table.review th { color: var(--muted); font-weight: 500; font-size: 0.85rem; white-space: nowrap; }
+table.review th.num, table.review td.num { text-align: right; }
 table.review tr.rejected td { opacity: 0.45; }
 table.review tr.rejected td.keep { opacity: 1; }
 table.review tr.newball td { border-top: 2px solid var(--border); }
@@ -235,6 +310,7 @@ table.review li.outlier { font-weight: 600; }
 
 dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: var(--text); max-width: min(92vw, 1100px); }
 dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog .actions > * { flex: 0 1 auto; }
 .frame-wrap { position: relative; display: inline-block; margin: 8px 0; }
 #frame { display: block; max-width: 100%; max-height: 62vh; cursor: crosshair; }
 /* The tracking area, drawn over a picture: the outside is shaded. */
@@ -252,4 +328,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 #picture-img { display: block; max-width: 100%; max-height: 75vh; }
 #picture-img.closeup { width: min(560px, 85vw); image-rendering: pixelated; }
 
-.foot { padding: 4px 16px 16px; }
+.foot { padding: 4px 16px 16px; text-align: center; }
+
+@media (max-width: 720px) {
+  .steps { order: 3; flex-basis: 100%; }
+}

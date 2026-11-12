@@ -76,11 +76,15 @@ Re-running the installer is safe: it keeps your `config.toml` and data.
 
 ## Ball batches and bounce tests
 
-The **Balls** panel tracks how your balls bounce, as planned in [PLAN.md §6.2](PLAN.md):
+The dashboard has four tabs. **Overview** shows each canister and what to do with each batch of
+balls now. **Pressure** has the charts, your notes and the readings. **Balls** has a page per
+batch. **Setup** holds what you set once: units, test setups and reference values.
 
-1. **Add a test setup once:** the drop height and surface you'll always use. Tick *ITF method* if you
+The app tracks how your balls bounce, as planned in [PLAN.md §6.2](PLAN.md):
+
+1. **Add a test setup once**, on the Setup tab: the drop height and surface you'll always use. Tick *ITF method* if you
    drop from 100 in onto concrete.
-2. **Add a batch** when you open new balls. For more than 12 balls, pick 10 at random, number them
+2. **Add a batch** (*New batch*, on Overview or Balls) when you open new balls. For more than 12 balls, pick 10 at random, number them
    1–10 with a marker, and always test those same balls.
 3. **Bounce test** new balls straight from the can, then before and after each canister session.
    Drop each numbered ball 3 times and type the rebound height, measured to the bottom of the ball.
@@ -88,7 +92,7 @@ The **Balls** panel tracks how your balls bounce, as planned in [PLAN.md §6.2](
 4. When you put balls in a canister or take them out, start or end a **charge session** (below),
    so the app knows where each batch is and what pressure it sat at.
 
-*Download bounce data (CSV)* exports every drop.
+*Your data* on the Setup tab exports every drop as CSV.
 
 ### Charge sessions: how long to keep the pressure up
 
@@ -105,9 +109,9 @@ them there for as long as it takes until you next play.
    pressure in the readings and reads *Holding at maintenance pressure*.
 4. **End charge session** when the balls come out to play, then **Log play** with the hours.
 
-**Show history** on a batch charts its bounce as a share of new: dots for tests, a line for the
-estimate between them, shading for time in a canister. Under it, each session is listed with its
-pressure and the bounce before and after.
+A batch's page on the **Balls** tab charts its bounce as a share of new: dots for tests, a line
+for the estimate between them, shading for time in a canister. Under it are its bounce tests,
+then each session with its pressure and the bounce before and after, then play.
 
 The estimate comes from the latest bounce test and the canister pressure measured since, so it is
 only as good as the rates it assumes. They start as guesses in `config.toml` under `[charge]`, and
@@ -128,7 +132,8 @@ uv run --extra video ball-bounce-tracker
 It opens in the browser and reads batches and setups from the Pi (`--pi URL` if it isn't
 `http://canisters.local:5000`). Put two marks on the wall at the drop line: the drop height, and a
 **mid mark** near typical rebound heights. Store the mid mark with the setup on the dashboard so
-the app fills it in.
+the app fills it in. The top of the page shows where you are: *Set up*, *Measure*, then
+*Review and save*.
 
 1. Pick the batch, setup and stage. Then pick a webcam, or drop in a phone clip.
 2. Start with three holds, the ball still on the floor, at the mid mark, then at the drop mark.
